@@ -19,7 +19,7 @@ const initAuthRoutes = (client) => {
 // Register new user
 router.post('/register', async (req, res) => {
   try {
-    const { email, password, name, role = 'member' } = req.body;
+    const { email, password, name, role = 'member', photoURL } = req.body;
 
     // Validate input
     if (!email || !password || !name) {
@@ -41,6 +41,7 @@ router.post('/register', async (req, res) => {
       password: hashedPassword,
       name,
       role: role.toLowerCase(), // admin, clubManager, member
+      photoURL: photoURL || null,
       createdAt: new Date(),
       updatedAt: new Date()
     };
@@ -63,7 +64,8 @@ router.post('/register', async (req, res) => {
         id: userId.toString(),
         email: user.email,
         name: user.name,
-        role: user.role
+        role: user.role,
+        photoURL: user.photoURL
       }
     });
   } catch (error) {
@@ -108,8 +110,7 @@ router.post('/login', async (req, res) => {
         id: user._id.toString(),
         email: user.email,
         name: user.name,
-        role: user.role,
-        photoURL: user.photoURL || null
+        role: user.role
       }
     });
   } catch (error) {
@@ -157,12 +158,13 @@ router.post('/google', async (req, res) => {
         { expiresIn: '7d' }
       );
 
-      // Update user info if needed (e.g., photo URL changed)
-      if (photoURL && user.photoURL !== photoURL) {
+      // Update user info if needed (e.g., photo URL changed or missing)
+      if (photoURL && (!user.photoURL || user.photoURL !== photoURL)) {
         await usersCollection.updateOne(
           { _id: user._id },
           { $set: { photoURL, updatedAt: new Date() } }
         );
+        user.photoURL = photoURL; // Update local user object for response
       }
 
       return res.json({
