@@ -159,6 +159,106 @@ router.delete('/users/:id', verifyToken, authorize('admin'), async (req, res) =>
   }
 });
 
+// ==================== DASHBOARD STATS ====================
+
+// Get dashboard overview stats
+router.get('/dashboard/stats', verifyToken, authorize('admin'), async (req, res) => {
+  try {
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const endOfLastMonth = new Date(now.getFullYear(), now.getMonth(), 0);
+
+    // Total users
+    const totalUsers = await usersCollection.countDocuments({});
+    const usersThisMonth = await usersCollection.countDocuments({
+      createdAt: { $gte: startOfMonth }
+    });
+    const usersLastMonth = await usersCollection.countDocuments({
+      createdAt: { $gte: lastMonth, $lte: endOfLastMonth }
+    });
+    const usersGrowth = usersLastMonth > 0 
+      ? Math.round(((usersThisMonth - usersLastMonth) / usersLastMonth) * 100)
+      : 0;
+
+    // Pending clubs
+    const pendingClubs = await clubsCollection.countDocuments({ status: 'pending' });
+    const pendingClubsYesterday = await clubsCollection.countDocuments({
+      status: 'pending',
+      createdAt: { $lt: new Date(now.getTime() - 24 * 60 * 60 * 1000) }
+    });
+    const pendingClubsNew = pendingClubs - pendingClubsYesterday;
+
+    // Total revenue
+    const revenueResult = await transactionsCollection.aggregate([
+      {
+        $match: { status: 'paid' }
+      },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: '$amount' }
+        }
+      }
+    ]).toArray();
+    const totalRevenue = revenueResult.length > 0 ? revenueResult[0].total : 0;
+    
+    // Revenue this month vs last month
+    const revenueThisMonth = await transactionsCollection.aggregate([
+      {
+        $match: {
+          status: 'paid',
+          createdAt: { $gte: startOfMonth }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: '$amount' }
+        }
+      }
+    ]).toArray();
+    const revenueLastMonth = await transactionsCollection.aggregate([
+      {
+        $match: {
+          status: 'paid',
+          createdAt: { $gte: lastMonth, $lte: endOfLastMonth }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: '$amount' }
+        }
+      }
+    ]).toArray();
+    const revenueThisMonthAmount = revenueThisMonth.length > 0 ? revenueThisMonth[0].total : 0;
+    const revenueLastMonthAmount = revenueLastMonth.length > 0 ? revenueLastMonth[0].total : 0;
+    const revenueGrowth = revenueLastMonthAmount > 0
+      ? Math.round(((revenueThisMonthAmount - revenueLastMonthAmount) / revenueLastMonthAmount) * 100)
+      : 0;
+
+    // Active events
+    const activeEvents = await eventsCollection.countDocuments({
+      date: { $gte: now },
+      status: 'active'
+    });
+
+    res.json({
+      totalUsers,
+      usersGrowth,
+      pendingClubs,
+      pendingClubsNew,
+      totalRevenue: totalRevenue / 100, // Convert cents to taka
+      revenueGrowth,
+      activeEvents
+    });
+  } catch (error) {
+    console.error('Get dashboard stats error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // ==================== CLUBS MANAGEMENT ====================
 
 // Get clubs stats

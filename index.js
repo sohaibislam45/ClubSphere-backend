@@ -145,6 +145,87 @@ async function run() {
         }
       });
 
+      // Public endpoint to fetch events by club ID (no authentication required)
+      // IMPORTANT: This must come BEFORE /api/clubs/:id to avoid route conflicts
+      app.get('/api/clubs/:id/events', async (req, res) => {
+        try {
+          const db = client.db('clubsphere');
+          const eventsCollection = db.collection('events');
+          const { id } = req.params;
+          const now = new Date();
+          const limit = parseInt(req.query.limit) || 10;
+
+          // First, get the club to find events by club name or clubId
+          const clubsCollection = db.collection('clubs');
+          let club;
+          
+          if (ObjectId.isValid(id)) {
+            club = await clubsCollection.findOne({ _id: new ObjectId(id) });
+          }
+          
+          if (!club) {
+            return res.status(404).json({ error: 'Club not found' });
+          }
+
+          // Find events for this club (by clubName or clubId)
+          const query = {
+            $or: [
+              { clubName: club.name },
+              { clubId: id }
+            ],
+            date: { $gte: now },
+            status: 'active'
+          };
+
+          const events = await eventsCollection
+            .find(query)
+            .sort({ date: 1 })
+            .limit(limit)
+            .toArray();
+
+          // Format response
+          const formattedEvents = events.map(event => {
+            const eventDate = event.date ? new Date(event.date) : new Date();
+            const timeStr = event.time || '12:00 PM';
+            
+            // Format date for display
+            const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            const month = months[eventDate.getMonth()];
+            const day = eventDate.getDate();
+            
+            // Format day of week
+            const daysOfWeek = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+            const dayOfWeek = daysOfWeek[eventDate.getDay()];
+            
+            // Get fee
+            const eventFee = event.fee || (event.type === 'Paid' ? (event.amount || 0) : 0);
+
+            return {
+              id: event._id.toString(),
+              name: event.name || '',
+              title: event.name || '',
+              clubName: event.clubName || club.name,
+              image: event.image || null,
+              date: eventDate,
+              eventDate: eventDate.toISOString(),
+              month: month,
+              day: day,
+              dayOfWeek: dayOfWeek,
+              time: timeStr,
+              formattedDate: `${dayOfWeek}, ${timeStr}`,
+              location: event.location || '',
+              eventFee: eventFee,
+              isPaid: eventFee > 0
+            };
+          });
+
+          res.json({ events: formattedEvents });
+        } catch (error) {
+          console.error('Get club events error:', error);
+          res.status(500).json({ error: 'Internal server error' });
+        }
+      });
+
       // Public endpoint to fetch a single club by ID (no authentication required)
       app.get('/api/clubs/:id', async (req, res) => {
         try {
@@ -231,10 +312,7 @@ async function run() {
 
           // First, let's check what clubs exist and their statuses (for debugging)
           const allClubs = await clubsCollection.find({}).toArray();
-          console.log(`Total clubs in database: ${allClubs.length}`);
-          if (allClubs.length > 0) {
-            console.log('Club statuses:', allClubs.map(c => ({ name: c.name, status: c.status })));
-          }
+
 
           // Build query - show active clubs, or clubs without status (for backward compatibility)
           // For public viewing, we want to show approved/active clubs
@@ -337,6 +415,91 @@ async function run() {
         }
       });
 
+      // Public endpoint to fetch all events (no authentication required)
+      app.get('/api/events', async (req, res) => {
+        try {
+          const db = client.db('clubsphere');
+          const eventsCollection = db.collection('events');
+          const clubsCollection = db.collection('clubs');
+          const now = new Date();
+          const search = req.query.search || '';
+          const filter = req.query.filter || 'all';
+
+          // Build query
+          let query = {
+            date: { $gte: now },
+            status: 'active'
+          };
+
+          // Fetch events
+          let events = await eventsCollection
+            .find(query)
+            .sort({ date: 1 })
+            .toArray();
+
+          // Get club images for events
+          const clubIds = [...new Set(events.map(e => e.clubId).filter(Boolean))];
+          const clubObjectIds = clubIds
+            .filter(id => ObjectId.isValid(id))
+            .map(id => new ObjectId(id));
+          
+          let clubs = [];
+          if (clubObjectIds.length > 0) {
+            clubs = await clubsCollection
+              .find({ _id: { $in: clubObjectIds } })
+              .toArray();
+          }
+          
+          const clubMap = {};
+          clubs.forEach(club => {
+            clubMap[club._id.toString()] = club.image || null;
+          });
+
+          // Format response to match EventCard expectations
+          const formattedEvents = events.map(event => {
+            const eventDate = event.date ? new Date(event.date) : new Date();
+            const timeStr = event.time || '12:00 PM';
+            
+            // Get fee from event (could be in fee field or type field)
+            const eventFee = event.fee || (event.type === 'Paid' ? (event.amount || 0) : 0);
+            const isPaid = eventFee > 0;
+
+            return {
+              id: event._id.toString(),
+              title: event.name || '',
+              eventDate: eventDate.toISOString(),
+              eventFee: eventFee,
+              isPaid: isPaid,
+              clubName: event.clubName || '',
+              clubImage: event.clubId ? (clubMap[event.clubId] || null) : null,
+              image: event.image || null,
+              location: event.location || ''
+            };
+          });
+
+          // Apply search filter
+          let filteredEvents = formattedEvents;
+          if (search) {
+            const searchLower = search.toLowerCase();
+            filteredEvents = formattedEvents.filter(event =>
+              event.title?.toLowerCase().includes(searchLower) ||
+              event.location?.toLowerCase().includes(searchLower) ||
+              event.clubName?.toLowerCase().includes(searchLower)
+            );
+          }
+
+          // Apply free filter
+          if (filter === 'free') {
+            filteredEvents = filteredEvents.filter(event => event.eventFee === 0);
+          }
+
+          res.json(filteredEvents);
+        } catch (error) {
+          console.error('Get events error:', error);
+          res.status(500).json({ error: 'Internal server error' });
+        }
+      });
+
       // Public endpoint to fetch upcoming events (no authentication required)
       app.get('/api/events/upcoming', async (req, res) => {
         try {
@@ -390,6 +553,7 @@ async function run() {
           res.status(500).json({ error: 'Internal server error' });
         }
       });
+
 
       // Send a ping to confirm a successful connection
       await client.db("admin").command({ ping: 1 });
