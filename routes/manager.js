@@ -346,7 +346,7 @@ router.get('/events', verifyToken, authorize('clubManager'), async (req, res) =>
       });
       revenue += (event.price || 0) * regCount;
     }
-    revenue = revenue / 100; // Convert cents to dollars
+    revenue = revenue / 100; // Convert cents to taka
 
     // Format events with registration counts
     const eventsWithDetails = await Promise.all(events.map(async (event) => {
@@ -381,7 +381,7 @@ router.get('/events', verifyToken, authorize('clubManager'), async (req, res) =>
       stats: {
         total: totalEvents,
         upcoming: upcomingEvents,
-        revenue: revenue / 100 // Convert cents to dollars if stored as cents
+        revenue: revenue / 100 // Convert cents to taka if stored as cents
       }
     });
   } catch (error) {

@@ -63,7 +63,7 @@ async function run() {
       app.use('/api/auth', authRouter);
 
       // Initialize admin routes with MongoDB client
-      const adminRouter = initAdminRoutes(client);
+      const adminRouter = await initAdminRoutes(client);
       app.use('/api/admin', adminRouter);
 
       // Initialize manager routes with MongoDB client
@@ -73,6 +73,120 @@ async function run() {
       // Initialize member routes with MongoDB client
       const memberRouter = initMemberRoutes(client);
       app.use('/api/member', memberRouter);
+
+      // Public endpoint to fetch active/featured clubs (no authentication required)
+      app.get('/api/clubs/featured', async (req, res) => {
+        try {
+          const db = client.db('clubsphere');
+          const clubsCollection = db.collection('clubs');
+          const limit = parseInt(req.query.limit) || 10;
+
+          // Fetch active clubs, sorted by creation date (newest first)
+          const clubs = await clubsCollection
+            .find({ status: 'active' })
+            .sort({ createdAt: -1 })
+            .limit(limit)
+            .toArray();
+
+          // Format response to match frontend expectations
+          const formattedClubs = clubs.map(club => {
+            // Format member count
+            const memberCount = club.memberCount || 0;
+            const memberCountFormatted = memberCount >= 1000 
+              ? `${(memberCount / 1000).toFixed(1)}k` 
+              : memberCount.toString();
+
+            // Get next event date (placeholder - can be enhanced with actual event data)
+            const nextEvent = 'Coming soon';
+
+            // Format category - capitalize first letter and handle common mappings
+            const categoryMap = {
+              'sports': 'Fitness',
+              'tech': 'Tech',
+              'technology': 'Tech',
+              'arts': 'Arts',
+              'photography': 'Photography',
+              'gaming': 'Gaming',
+              'music': 'Music',
+              'social': 'Social',
+              'lifestyle': 'Lifestyle'
+            };
+            const category = club.category || 'General';
+            const formattedCategory = categoryMap[category.toLowerCase()] || 
+              category.charAt(0).toUpperCase() + category.slice(1).toLowerCase();
+
+            return {
+              id: club._id.toString(),
+              name: club.name,
+              category: formattedCategory,
+              members: memberCountFormatted,
+              nextEvent: nextEvent,
+              image: club.image || null,
+              description: club.description || '',
+              location: club.location || ''
+            };
+          });
+
+          res.json({ clubs: formattedClubs });
+        } catch (error) {
+          console.error('Get featured clubs error:', error);
+          res.status(500).json({ error: 'Internal server error' });
+        }
+      });
+
+      // Public endpoint to fetch upcoming events (no authentication required)
+      app.get('/api/events/upcoming', async (req, res) => {
+        try {
+          const db = client.db('clubsphere');
+          const eventsCollection = db.collection('events');
+          const limit = parseInt(req.query.limit) || 6;
+          const now = new Date();
+
+          // Fetch upcoming events (date >= now), sorted by date (earliest first)
+          const events = await eventsCollection
+            .find({ 
+              date: { $gte: now },
+              status: 'active'
+            })
+            .sort({ date: 1 })
+            .limit(limit)
+            .toArray();
+
+          // Format response to match frontend expectations
+          const formattedEvents = events.map(event => {
+            const eventDate = event.date ? new Date(event.date) : new Date();
+            const timeStr = event.time || '12:00 PM';
+            
+            // Format date for display
+            const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            const month = months[eventDate.getMonth()];
+            const day = eventDate.getDate();
+            
+            // Format day of week and time
+            const daysOfWeek = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+            const dayOfWeek = daysOfWeek[eventDate.getDay()];
+            const formattedDate = `${dayOfWeek}, ${timeStr}`;
+
+            return {
+              id: event._id.toString(),
+              name: event.name || '',
+              clubName: event.clubName || '',
+              image: event.image || null,
+              date: eventDate,
+              month: month,
+              day: day,
+              formattedDate: formattedDate,
+              location: event.location || '',
+              time: timeStr
+            };
+          });
+
+          res.json({ events: formattedEvents });
+        } catch (error) {
+          console.error('Get upcoming events error:', error);
+          res.status(500).json({ error: 'Internal server error' });
+        }
+      });
 
       // Send a ping to confirm a successful connection
       await client.db("admin").command({ ping: 1 });

@@ -553,7 +553,7 @@ router.get('/payments', verifyToken, authorize('member'), async (req, res) => {
         status: transaction.status || 'success',
         statusLabel,
         statusColor,
-        amount: transaction.amount ? (transaction.amount / 100).toFixed(2) : '0.00', // Convert cents to dollars
+        amount: transaction.amount ? (transaction.amount / 100).toFixed(2) : '0.00', // Convert cents to taka
         icon,
         invoiceId: transaction.invoiceId || null
       };
