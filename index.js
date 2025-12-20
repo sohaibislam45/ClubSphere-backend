@@ -74,6 +74,93 @@ async function run() {
       const memberRouter = initMemberRoutes(client);
       app.use('/api/member', memberRouter);
 
+      // Public endpoint to fetch all clubs with search and filter (no authentication required)
+      app.get('/api/clubs', async (req, res) => {
+        try {
+          const db = client.db('clubsphere');
+          const clubsCollection = db.collection('clubs');
+          const search = req.query.search || '';
+          const category = req.query.category || '';
+
+          // Build query for active clubs
+          const query = { status: 'active' };
+
+          // Add category filter if provided and not 'all'
+          if (category && category !== 'all') {
+            // Map frontend category names to database category names
+            const categoryMap = {
+              'fitness': ['sports', 'fitness'],
+              'tech': ['tech', 'technology'],
+              'arts': ['arts'],
+              'lifestyle': ['lifestyle'],
+              'sports': ['sports'],
+              'social': ['social']
+            };
+            
+            const categoryLower = category.toLowerCase();
+            const dbCategories = categoryMap[categoryLower] || [categoryLower];
+            // Use case-insensitive matching with regex - MongoDB will AND this with status: 'active'
+            query.$or = dbCategories.map(cat => ({
+              category: { $regex: `^${cat}$`, $options: 'i' }
+            }));
+          }
+
+          // Fetch active clubs, sorted by creation date (newest first)
+          let clubs = await clubsCollection
+            .find(query)
+            .sort({ createdAt: -1 })
+            .toArray();
+
+          // Apply search filter if provided
+          if (search) {
+            const searchLower = search.toLowerCase();
+            clubs = clubs.filter(club => 
+              club.name?.toLowerCase().includes(searchLower) ||
+              club.location?.toLowerCase().includes(searchLower) ||
+              club.description?.toLowerCase().includes(searchLower)
+            );
+          }
+
+          // Format response to match frontend expectations
+          const formattedClubs = clubs.map(club => {
+            // Format category - capitalize first letter and handle common mappings
+            const categoryMap = {
+              'sports': 'Fitness',
+              'fitness': 'Fitness',
+              'tech': 'Tech',
+              'technology': 'Tech',
+              'arts': 'Arts',
+              'photography': 'Photography',
+              'gaming': 'Gaming',
+              'music': 'Music',
+              'social': 'Social',
+              'lifestyle': 'Lifestyle'
+            };
+            const clubCategory = club.category || 'General';
+            const formattedCategory = categoryMap[clubCategory.toLowerCase()] || 
+              clubCategory.charAt(0).toUpperCase() + clubCategory.slice(1).toLowerCase();
+
+            return {
+              id: club._id.toString(),
+              clubName: club.name,
+              name: club.name, // Keep both for compatibility
+              category: formattedCategory,
+              location: club.location || '',
+              membershipFee: club.fee || 0,
+              memberCount: club.memberCount || 0,
+              bannerImage: club.image || null,
+              image: club.image || null, // Keep both for compatibility
+              description: club.description || ''
+            };
+          });
+
+          res.json(formattedClubs);
+        } catch (error) {
+          console.error('Get clubs error:', error);
+          res.status(500).json({ error: 'Internal server error' });
+        }
+      });
+
       // Public endpoint to fetch active/featured clubs (no authentication required)
       app.get('/api/clubs/featured', async (req, res) => {
         try {

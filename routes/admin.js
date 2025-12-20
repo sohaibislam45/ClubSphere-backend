@@ -633,12 +633,26 @@ router.get('/events/:id', verifyToken, authorize('admin'), async (req, res) => {
       return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
     };
 
+    // Return raw date for datetime-local input
+    const getDateTimeLocal = (date) => {
+      if (!date) return '';
+      const d = new Date(date);
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      const hours = String(d.getHours()).padStart(2, '0');
+      const minutes = String(d.getMinutes()).padStart(2, '0');
+      return `${year}-${month}-${day}T${hours}:${minutes}`;
+    };
+
     res.json({
       id: event._id.toString(),
       name: event.name || '',
       description: event.description || '',
       date: formatDate(event.date),
       time: formatTime(event.date),
+      dateTimeLocal: getDateTimeLocal(event.date), // For datetime-local input
+      rawDate: event.date, // ISO string for reference
       location: event.location || '',
       clubId: event.clubId?.toString() || '',
       clubName: club?.name || '',
@@ -658,11 +672,38 @@ router.get('/events/:id', verifyToken, authorize('admin'), async (req, res) => {
 router.put('/events/:id', verifyToken, authorize('admin'), async (req, res) => {
   try {
     const { id } = req.params;
-    const updateData = req.body;
+    const { date, time, ...restData } = req.body;
+
+    // Prepare update data
+    const updateData = { ...restData, updatedAt: new Date() };
+
+    // If date is provided, combine with time if available
+    if (date) {
+      // date comes as ISO date string (YYYY-MM-DD), time comes as formatted string (e.g., "8:00 PM")
+      if (time) {
+        // Parse the time string and combine with date
+        const dateTimeStr = `${date} ${time}`;
+        updateData.date = new Date(dateTimeStr);
+        updateData.time = time;
+      } else {
+        // If only date is provided, use it as is
+        updateData.date = new Date(date);
+      }
+    }
+
+    // Convert clubId to ObjectId if provided
+    if (updateData.clubId) {
+      updateData.clubId = new ObjectId(updateData.clubId);
+    }
+
+    // Convert maxAttendees to number if provided
+    if (updateData.maxAttendees !== undefined) {
+      updateData.maxAttendees = updateData.maxAttendees ? parseInt(updateData.maxAttendees) : null;
+    }
 
     const result = await eventsCollection.updateOne(
       { _id: new ObjectId(id) },
-      { $set: { ...updateData, updatedAt: new Date() } }
+      { $set: updateData }
     );
 
     if (result.matchedCount === 0) {
