@@ -5,6 +5,8 @@ const { MongoClient, ServerApiVersion } = require('mongodb');
 const admin = require('firebase-admin');
 const { initAuthRoutes } = require('./routes/auth');
 const { initAdminRoutes } = require('./routes/admin');
+const { initManagerRoutes } = require('./routes/manager');
+const { initMemberRoutes } = require('./routes/member');
 const { verifyToken } = require('./middleware/auth');
 const app = express();
 const port = process.env.PORT || 3000;
@@ -63,6 +65,14 @@ async function run() {
       // Initialize admin routes with MongoDB client
       const adminRouter = initAdminRoutes(client);
       app.use('/api/admin', adminRouter);
+
+      // Initialize manager routes with MongoDB client
+      const managerRouter = initManagerRoutes(client);
+      app.use('/api/manager', managerRouter);
+
+      // Initialize member routes with MongoDB client
+      const memberRouter = initMemberRoutes(client);
+      app.use('/api/member', memberRouter);
 
       // Send a ping to confirm a successful connection
       await client.db("admin").command({ ping: 1 });
