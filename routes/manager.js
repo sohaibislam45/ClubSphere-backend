@@ -68,7 +68,20 @@ router.get('/clubs', verifyToken, authorize('clubManager'), async (req, res) => 
     }
     
     if (category && category !== 'All Clubs') {
-      query.category = category;
+      // Normalize category name - map common variations
+      const categoryMap = {
+        'sports': 'sports',
+        'fitness': 'fitness',
+        'technology': 'technology',
+        'tech': 'technology',
+        'lifestyle': 'lifestyle',
+        'arts': 'arts',
+        'arts & culture': 'arts',
+        'social': 'social'
+      };
+      
+      const normalizedCategory = categoryMap[category.toLowerCase()] || category.toLowerCase();
+      query.category = { $regex: `^${normalizedCategory}$`, $options: 'i' };
     }
 
     // Get clubs
@@ -97,6 +110,8 @@ router.get('/clubs', verifyToken, authorize('clubManager'), async (req, res) => 
         memberCount,
         upcomingEventCount,
         schedule: club.schedule || '',
+        location: club.location || '',
+        fee: club.fee ? club.fee / 100 : 0, // Convert from cents to taka
         createdAt: club.createdAt
       };
     }));
@@ -143,10 +158,61 @@ router.get('/clubs/:id', verifyToken, authorize('clubManager'), async (req, res)
       memberCount,
       upcomingEventCount,
       schedule: club.schedule || '',
+      location: club.location || '',
+      fee: club.fee ? club.fee / 100 : 0, // Convert from cents to taka
       createdAt: club.createdAt
     });
   } catch (error) {
     console.error('Get club error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Create new club
+router.post('/clubs', verifyToken, authorize('clubManager'), async (req, res) => {
+  try {
+    const managerEmail = req.user.email;
+    const { name, description, image, category, schedule, location, fee } = req.body;
+
+    // Validate required fields
+    if (!name) {
+      return res.status(400).json({ error: 'Club name is required' });
+    }
+
+    // Create club object
+    const club = {
+      name,
+      description: description || '',
+      image: image || null,
+      category: category || 'Uncategorized',
+      schedule: schedule || '',
+      location: location || '',
+      fee: fee ? Math.round(fee * 100) : 0, // Store as cents
+      managerEmail,
+      status: 'pending', // New clubs need admin approval
+      memberCount: 0,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    const result = await clubsCollection.insertOne(club);
+
+    res.status(201).json({
+      id: result.insertedId.toString(),
+      message: 'Club created successfully. It will be visible after admin approval.',
+      club: {
+        id: result.insertedId.toString(),
+        name: club.name,
+        description: club.description,
+        image: club.image,
+        category: club.category,
+        schedule: club.schedule,
+        memberCount: 0,
+        upcomingEventCount: 0
+      }
+    });
+  } catch (error) {
+    console.error('Create club error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -168,6 +234,17 @@ router.put('/clubs/:id', verifyToken, authorize('clubManager'), async (req, res)
       return res.status(404).json({ error: 'Club not found or access denied' });
     }
 
+    // Convert fee to cents if provided (frontend sends in cents already, but handle both cases)
+    if (updateData.fee !== undefined) {
+      // If fee is less than 100, assume it's in taka and convert to cents
+      // Otherwise assume it's already in cents
+      if (updateData.fee < 100) {
+        updateData.fee = Math.round(updateData.fee * 100);
+      } else {
+        updateData.fee = Math.round(updateData.fee);
+      }
+    }
+
     const result = await clubsCollection.updateOne(
       { _id: new ObjectId(id) },
       { $set: { ...updateData, updatedAt: new Date() } }
@@ -180,6 +257,36 @@ router.put('/clubs/:id', verifyToken, authorize('clubManager'), async (req, res)
     res.json({ message: 'Club updated successfully' });
   } catch (error) {
     console.error('Update club error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Delete club (verify ownership)
+router.delete('/clubs/:id', verifyToken, authorize('clubManager'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const managerEmail = req.user.email;
+
+    // Verify club ownership
+    const club = await clubsCollection.findOne({ 
+      _id: new ObjectId(id),
+      managerEmail 
+    });
+
+    if (!club) {
+      return res.status(404).json({ error: 'Club not found or access denied' });
+    }
+
+    // Delete the club
+    const result = await clubsCollection.deleteOne({ _id: new ObjectId(id) });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ error: 'Club not found' });
+    }
+
+    res.json({ message: 'Club deleted successfully' });
+  } catch (error) {
+    console.error('Delete club error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

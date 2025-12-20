@@ -283,7 +283,7 @@ async function run() {
             name: club.name,
             category: formattedCategory,
             location: club.location || '',
-            membershipFee: club.fee || 0,
+            membershipFee: club.fee ? club.fee / 100 : 0, // Convert from cents to taka
             memberCount: club.memberCount || 0,
             bannerImage: club.image || null,
             image: club.image || null,
@@ -398,7 +398,7 @@ async function run() {
               name: club.name, // Keep both for compatibility
               category: formattedCategory,
               location: club.location || '',
-              membershipFee: club.fee || 0,
+              membershipFee: club.fee ? club.fee / 100 : 0, // Convert from cents to taka
               memberCount: club.memberCount || 0,
               bannerImage: club.image || null,
               image: club.image || null, // Keep both for compatibility
@@ -550,6 +550,32 @@ async function run() {
           res.json({ events: formattedEvents });
         } catch (error) {
           console.error('Get upcoming events error:', error);
+          res.status(500).json({ error: 'Internal server error' });
+        }
+      });
+
+      // Public endpoint to fetch all categories
+      app.get('/api/categories', async (req, res) => {
+        try {
+          const db = client.db('clubsphere');
+          const categoriesCollection = db.collection('categories');
+          
+          const categories = await categoriesCollection
+            .find({})
+            .sort({ displayName: 1 })
+            .toArray();
+
+          // Format response
+          const formattedCategories = categories.map(category => ({
+            id: category._id.toString(),
+            name: category.name,
+            displayName: category.displayName || category.name,
+            createdAt: category.createdAt
+          }));
+
+          res.json({ categories: formattedCategories });
+        } catch (error) {
+          console.error('Get categories error:', error);
           res.status(500).json({ error: 'Internal server error' });
         }
       });
