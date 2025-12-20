@@ -292,11 +292,16 @@ router.get('/clubs/:id', verifyToken, authorize('admin'), async (req, res) => {
 router.put('/clubs/:id', verifyToken, authorize('admin'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, description, category, location, fee, managerEmail, image } = req.body;
+    const { name, description, category, location, fee, managerEmail, image, status } = req.body;
 
-    // Validate required fields
-    if (!name || !description || !category || !location || !managerEmail) {
+    // Validate required fields (status can be updated independently)
+    if (status === undefined && (!name || !description || !category || !location || !managerEmail)) {
       return res.status(400).json({ error: 'Name, description, category, location, and manager email are required' });
+    }
+
+    // Validate status if provided
+    if (status !== undefined && !['active', 'inactive', 'pending', 'rejected'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid status. Must be one of: active, inactive, pending, rejected' });
     }
 
     // Validate manager email exists if changed
@@ -305,24 +310,26 @@ router.put('/clubs/:id', verifyToken, authorize('admin'), async (req, res) => {
       return res.status(404).json({ error: 'Club not found' });
     }
 
-    if (managerEmail !== club.managerEmail) {
+    if (managerEmail && managerEmail !== club.managerEmail) {
       const manager = await usersCollection.findOne({ email: managerEmail });
       if (!manager) {
         return res.status(400).json({ error: 'Manager email not found. User must be registered first.' });
       }
     }
 
-    // Update club
+    // Update club - only update fields that are provided
     const updateData = {
-      name,
-      description,
-      category,
-      location,
-      fee: fee || 0,
-      managerEmail,
-      image: image || club.image,
       updatedAt: new Date()
     };
+
+    if (name !== undefined) updateData.name = name;
+    if (description !== undefined) updateData.description = description;
+    if (category !== undefined) updateData.category = category;
+    if (location !== undefined) updateData.location = location;
+    if (fee !== undefined) updateData.fee = fee || 0;
+    if (managerEmail !== undefined) updateData.managerEmail = managerEmail;
+    if (image !== undefined) updateData.image = image || club.image;
+    if (status !== undefined) updateData.status = status;
 
     const result = await clubsCollection.updateOne(
       { _id: new ObjectId(id) },
@@ -595,6 +602,54 @@ router.post('/events', verifyToken, authorize('admin'), async (req, res) => {
     });
   } catch (error) {
     console.error('Create event error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get single event by ID
+router.get('/events/:id', verifyToken, authorize('admin'), async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const event = await eventsCollection.findOne({ _id: new ObjectId(id) });
+
+    if (!event) {
+      return res.status(404).json({ error: 'Event not found' });
+    }
+
+    // Get club info
+    const club = await clubsCollection.findOne({ _id: new ObjectId(event.clubId) });
+
+    // Format date and time
+    const formatDate = (date) => {
+      if (!date) return '';
+      const d = new Date(date);
+      return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+    };
+
+    const formatTime = (date) => {
+      if (!date) return '';
+      const d = new Date(date);
+      return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+    };
+
+    res.json({
+      id: event._id.toString(),
+      name: event.name || '',
+      description: event.description || '',
+      date: formatDate(event.date),
+      time: formatTime(event.date),
+      location: event.location || '',
+      clubId: event.clubId?.toString() || '',
+      clubName: club?.name || '',
+      type: event.type || 'free',
+      fee: event.fee || 0,
+      maxAttendees: event.maxAttendees || null,
+      image: event.image || null,
+      createdAt: formatDate(event.createdAt)
+    });
+  } catch (error) {
+    console.error('Get event error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
