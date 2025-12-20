@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const admin = require('firebase-admin');
 const { initAuthRoutes } = require('./routes/auth');
 const { initAdminRoutes } = require('./routes/admin');
@@ -74,6 +74,153 @@ async function run() {
       const memberRouter = initMemberRoutes(client);
       app.use('/api/member', memberRouter);
 
+      // Public endpoint to fetch active/featured clubs (no authentication required)
+      // IMPORTANT: This must come BEFORE /api/clubs/:id to avoid route conflicts
+      app.get('/api/clubs/featured', async (req, res) => {
+        try {
+          const db = client.db('clubsphere');
+          const clubsCollection = db.collection('clubs');
+          const limit = parseInt(req.query.limit) || 10;
+
+          // Fetch active clubs, or clubs without status (for backward compatibility)
+          // Same logic as /api/clubs endpoint
+          const query = {
+            $or: [
+              { status: 'active' },
+              { status: { $exists: false } }, // Include clubs without status field
+              { status: null } // Include clubs with null status
+            ]
+          };
+
+          const clubs = await clubsCollection
+            .find(query)
+            .sort({ createdAt: -1 })
+            .limit(limit)
+            .toArray();
+
+          // Format response to match frontend expectations
+          const formattedClubs = clubs.map(club => {
+            // Format member count
+            const memberCount = club.memberCount || 0;
+            const memberCountFormatted = memberCount >= 1000 
+              ? `${(memberCount / 1000).toFixed(1)}k` 
+              : memberCount.toString();
+
+            // Get next event date (placeholder - can be enhanced with actual event data)
+            const nextEvent = 'Coming soon';
+
+            // Format category - capitalize first letter and handle common mappings
+            const categoryMap = {
+              'sports': 'Fitness',
+              'fitness': 'Fitness',
+              'tech': 'Tech',
+              'technology': 'Tech',
+              'arts': 'Arts',
+              'photography': 'Photography',
+              'gaming': 'Gaming',
+              'music': 'Music',
+              'social': 'Social',
+              'lifestyle': 'Lifestyle'
+            };
+            const category = club.category || 'General';
+            const formattedCategory = categoryMap[category.toLowerCase()] || 
+              category.charAt(0).toUpperCase() + category.slice(1).toLowerCase();
+
+            return {
+              id: club._id.toString(),
+              name: club.name,
+              category: formattedCategory,
+              members: memberCountFormatted,
+              nextEvent: nextEvent,
+              image: club.image || null,
+              description: club.description || '',
+              location: club.location || ''
+            };
+          });
+
+          res.json({ clubs: formattedClubs });
+        } catch (error) {
+          console.error('Get featured clubs error:', error);
+          res.status(500).json({ error: 'Internal server error' });
+        }
+      });
+
+      // Public endpoint to fetch a single club by ID (no authentication required)
+      app.get('/api/clubs/:id', async (req, res) => {
+        try {
+          const db = client.db('clubsphere');
+          const clubsCollection = db.collection('clubs');
+          const { id } = req.params;
+          let club;
+          
+          // Try to find by ObjectId first
+          if (ObjectId.isValid(id)) {
+            club = await clubsCollection.findOne({ _id: new ObjectId(id) });
+          }
+          
+          // If not found, try finding by string id
+          if (!club) {
+            club = await clubsCollection.findOne({ _id: id });
+          }
+
+          if (!club) {
+            return res.status(404).json({ error: 'Club not found' });
+          }
+
+          // Only return active clubs (or clubs without status for backward compatibility)
+          if (club.status && club.status !== 'active' && club.status !== null) {
+            return res.status(404).json({ error: 'Club not found' });
+          }
+
+          // Format category
+          const categoryMap = {
+            'sports': 'Fitness',
+            'fitness': 'Fitness',
+            'tech': 'Tech',
+            'technology': 'Tech',
+            'arts': 'Arts',
+            'photography': 'Photography',
+            'gaming': 'Gaming',
+            'music': 'Music',
+            'social': 'Social',
+            'lifestyle': 'Lifestyle'
+          };
+          const clubCategory = club.category || 'General';
+          const formattedCategory = categoryMap[clubCategory.toLowerCase()] || 
+            clubCategory.charAt(0).toUpperCase() + clubCategory.slice(1).toLowerCase();
+
+          // Get manager info
+          const usersCollection = db.collection('users');
+          const manager = club.managerEmail 
+            ? await usersCollection.findOne({ email: club.managerEmail })
+            : null;
+
+          // Format response
+          const formattedClub = {
+            id: club._id.toString(),
+            clubName: club.name,
+            name: club.name,
+            category: formattedCategory,
+            location: club.location || '',
+            membershipFee: club.fee || 0,
+            memberCount: club.memberCount || 0,
+            bannerImage: club.image || null,
+            image: club.image || null,
+            description: club.description || '',
+            managerName: manager?.name || 'Unknown',
+            managerRole: 'Club Manager',
+            managerPhoto: manager?.photoURL || null,
+            meetingPoint: club.location || '',
+            tags: club.tags || []
+          };
+
+          res.json(formattedClub);
+        } catch (error) {
+          console.error('Get club by ID error:', error);
+          res.status(500).json({ error: 'Internal server error', message: error.message });
+        }
+      });
+
       // Public endpoint to fetch all clubs with search and filter (no authentication required)
       app.get('/api/clubs', async (req, res) => {
         try {
@@ -82,8 +229,26 @@ async function run() {
           const search = req.query.search || '';
           const category = req.query.category || '';
 
-          // Build query for active clubs
-          const query = { status: 'active' };
+          // First, let's check what clubs exist and their statuses (for debugging)
+          const allClubs = await clubsCollection.find({}).toArray();
+          console.log(`Total clubs in database: ${allClubs.length}`);
+          if (allClubs.length > 0) {
+            console.log('Club statuses:', allClubs.map(c => ({ name: c.name, status: c.status })));
+          }
+
+          // Build query - show active clubs, or clubs without status (for backward compatibility)
+          // For public viewing, we want to show approved/active clubs
+          // Note: Clubs created by managers have status 'pending' and need admin approval
+          const baseStatusQuery = {
+            $or: [
+              { status: 'active' },
+              { status: { $exists: false } }, // Include clubs without status field
+              { status: null } // Include clubs with null status
+            ]
+          };
+
+          // Start with base query
+          let query = { ...baseStatusQuery };
 
           // Add category filter if provided and not 'all'
           if (category && category !== 'all') {
@@ -99,17 +264,26 @@ async function run() {
             
             const categoryLower = category.toLowerCase();
             const dbCategories = categoryMap[categoryLower] || [categoryLower];
-            // Use case-insensitive matching with regex - MongoDB will AND this with status: 'active'
-            query.$or = dbCategories.map(cat => ({
-              category: { $regex: `^${cat}$`, $options: 'i' }
-            }));
+            // Combine status and category filters using $and
+            query = {
+              $and: [
+                baseStatusQuery,
+                {
+                  $or: dbCategories.map(cat => ({
+                    category: { $regex: `^${cat}$`, $options: 'i' }
+                  }))
+                }
+              ]
+            };
           }
 
-          // Fetch active clubs, sorted by creation date (newest first)
+          // Fetch clubs, sorted by creation date (newest first)
           let clubs = await clubsCollection
             .find(query)
             .sort({ createdAt: -1 })
             .toArray();
+
+          console.log(`Found ${clubs.length} clubs matching query (status: active or no status)`);
 
           // Apply search filter if provided
           if (search) {
@@ -154,70 +328,12 @@ async function run() {
             };
           });
 
+          console.log(`Returning ${formattedClubs.length} formatted clubs`);
           res.json(formattedClubs);
         } catch (error) {
           console.error('Get clubs error:', error);
-          res.status(500).json({ error: 'Internal server error' });
-        }
-      });
-
-      // Public endpoint to fetch active/featured clubs (no authentication required)
-      app.get('/api/clubs/featured', async (req, res) => {
-        try {
-          const db = client.db('clubsphere');
-          const clubsCollection = db.collection('clubs');
-          const limit = parseInt(req.query.limit) || 10;
-
-          // Fetch active clubs, sorted by creation date (newest first)
-          const clubs = await clubsCollection
-            .find({ status: 'active' })
-            .sort({ createdAt: -1 })
-            .limit(limit)
-            .toArray();
-
-          // Format response to match frontend expectations
-          const formattedClubs = clubs.map(club => {
-            // Format member count
-            const memberCount = club.memberCount || 0;
-            const memberCountFormatted = memberCount >= 1000 
-              ? `${(memberCount / 1000).toFixed(1)}k` 
-              : memberCount.toString();
-
-            // Get next event date (placeholder - can be enhanced with actual event data)
-            const nextEvent = 'Coming soon';
-
-            // Format category - capitalize first letter and handle common mappings
-            const categoryMap = {
-              'sports': 'Fitness',
-              'tech': 'Tech',
-              'technology': 'Tech',
-              'arts': 'Arts',
-              'photography': 'Photography',
-              'gaming': 'Gaming',
-              'music': 'Music',
-              'social': 'Social',
-              'lifestyle': 'Lifestyle'
-            };
-            const category = club.category || 'General';
-            const formattedCategory = categoryMap[category.toLowerCase()] || 
-              category.charAt(0).toUpperCase() + category.slice(1).toLowerCase();
-
-            return {
-              id: club._id.toString(),
-              name: club.name,
-              category: formattedCategory,
-              members: memberCountFormatted,
-              nextEvent: nextEvent,
-              image: club.image || null,
-              description: club.description || '',
-              location: club.location || ''
-            };
-          });
-
-          res.json({ clubs: formattedClubs });
-        } catch (error) {
-          console.error('Get featured clubs error:', error);
-          res.status(500).json({ error: 'Internal server error' });
+          console.error('Error stack:', error.stack);
+          res.status(500).json({ error: 'Internal server error', message: error.message });
         }
       });
 
