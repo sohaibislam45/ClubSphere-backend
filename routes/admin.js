@@ -594,28 +594,33 @@ router.put('/clubs/:id/approve-deletion', verifyToken, authorize('admin'), async
     const eventIds = eventsToDelete.map(event => event._id);
     const eventIdStrings = eventIds.map(id => id.toString());
 
-    // Delete event registrations for these events
+    // Cascade delete: Delete event registrations for these events
     // Handle both string and ObjectId formats for eventId
     if (eventIds.length > 0) {
-      await registrationsCollection.deleteMany({
+      const registrationsDeleteResult = await registrationsCollection.deleteMany({
         $or: [
           { eventId: { $in: eventIdStrings } }, // String format
           { eventId: { $in: eventIds } } // ObjectId format
         ]
       });
+      console.log(`[CASCADE DELETE] Deleted ${registrationsDeleteResult.deletedCount} event registration(s) for ${eventIds.length} event(s)`);
     }
 
-    // Delete events associated with this club
-    await eventsCollection.deleteMany({
+    // Cascade delete: Delete all events associated with this club
+    // This ensures that when a club is deleted, all its events are automatically deleted
+    const eventsDeleteResult = await eventsCollection.deleteMany({
       $or: [
         { clubId: clubId }, // String format
         { clubId: clubObjectId }, // ObjectId format
         { clubName: club.name } // Match by club name
       ]
     });
+    
+    console.log(`[CASCADE DELETE] Deleted ${eventsDeleteResult.deletedCount} event(s) associated with club: ${club.name} (${clubId})`);
 
-    // Delete memberships for this club
-    await membershipsCollection.deleteMany({ clubId: clubId });
+    // Cascade delete: Delete all memberships for this club
+    const membershipsDeleteResult = await membershipsCollection.deleteMany({ clubId: clubId });
+    console.log(`[CASCADE DELETE] Deleted ${membershipsDeleteResult.deletedCount} membership(s) for club: ${club.name} (${clubId})`);
 
     // Finally, delete the club
     const result = await clubsCollection.deleteOne({ _id: new ObjectId(id) });
