@@ -540,6 +540,7 @@ async function initializeRoutes() {
         const clubsCollection = db.collection('clubs');
         const search = req.query.search || '';
         const category = req.query.category || '';
+        const sortBy = req.query.sortBy || 'newest'; // Default to 'newest'
 
         // First, let's check what clubs exist and their statuses (for debugging)
         const allClubs = await clubsCollection.find({}).toArray();
@@ -586,10 +587,22 @@ async function initializeRoutes() {
           };
         }
 
-        // Fetch clubs, sorted by creation date (newest first)
+        // Determine sort order based on sortBy parameter
+        // For date-based sorting, sort in database; for fee-based, sort after formatting
+        let sortQuery = {};
+        if (sortBy === 'newest') {
+          sortQuery = { createdAt: -1 };
+        } else if (sortBy === 'oldest') {
+          sortQuery = { createdAt: 1 };
+        } else {
+          // Default to newest if sortBy is fee-based (will sort after formatting)
+          sortQuery = { createdAt: -1 };
+        }
+
+        // Fetch clubs with appropriate sorting
         let clubs = await clubsCollection
           .find(query)
-          .sort({ createdAt: -1 })
+          .sort(sortQuery)
           .toArray();
 
         console.log(`Found ${clubs.length} clubs matching query (status: active or no status)`);
@@ -605,7 +618,7 @@ async function initializeRoutes() {
         }
 
         // Format response to match frontend expectations
-        const formattedClubs = clubs.map(club => {
+        let formattedClubs = clubs.map(club => {
           // Format category - capitalize first letter and handle common mappings
           const categoryMap = {
             'sports': 'Fitness',
@@ -637,6 +650,13 @@ async function initializeRoutes() {
           };
         });
 
+        // Apply fee-based sorting if needed (after formatting since fee is mapped)
+        if (sortBy === 'highest_fee') {
+          formattedClubs.sort((a, b) => (b.membershipFee || 0) - (a.membershipFee || 0));
+        } else if (sortBy === 'lowest_fee') {
+          formattedClubs.sort((a, b) => (a.membershipFee || 0) - (b.membershipFee || 0));
+        }
+
         console.log(`Returning ${formattedClubs.length} formatted clubs`);
         res.json(formattedClubs);
       } catch (error) {
@@ -655,6 +675,7 @@ async function initializeRoutes() {
         const now = new Date();
         const search = req.query.search || '';
         const filter = req.query.filter || 'all';
+        const sortBy = req.query.sortBy || 'oldest'; // Default to 'oldest' (earliest date first)
 
         // Build query
         let query = {
@@ -662,10 +683,22 @@ async function initializeRoutes() {
           status: 'active'
         };
 
-        // Fetch events
+        // Determine sort order based on sortBy parameter
+        // For date-based sorting, sort in database; for fee-based, sort after formatting
+        let sortQuery = {};
+        if (sortBy === 'newest') {
+          sortQuery = { date: -1 }; // Newest date first
+        } else if (sortBy === 'oldest') {
+          sortQuery = { date: 1 }; // Oldest date first (earliest upcoming)
+        } else {
+          // Default to oldest if sortBy is fee-based (will sort after formatting)
+          sortQuery = { date: 1 };
+        }
+
+        // Fetch events with appropriate sorting
         let events = await eventsCollection
           .find(query)
-          .sort({ date: 1 })
+          .sort(sortQuery)
           .toArray();
 
         // Get club images for events
@@ -687,7 +720,7 @@ async function initializeRoutes() {
         });
 
         // Format response to match EventCard expectations
-        const formattedEvents = events.map(event => {
+        let formattedEvents = events.map(event => {
           const eventDate = event.date ? new Date(event.date) : new Date();
           const timeStr = event.time || '12:00 PM';
           
@@ -715,6 +748,13 @@ async function initializeRoutes() {
             location: event.location || ''
           };
         });
+
+        // Apply fee-based sorting if needed (after formatting since fee is calculated)
+        if (sortBy === 'highest_fee') {
+          formattedEvents.sort((a, b) => (b.eventFee || 0) - (a.eventFee || 0));
+        } else if (sortBy === 'lowest_fee') {
+          formattedEvents.sort((a, b) => (a.eventFee || 0) - (b.eventFee || 0));
+        }
 
         // Apply search filter
         let filteredEvents = formattedEvents;
