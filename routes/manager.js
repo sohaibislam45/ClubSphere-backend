@@ -422,45 +422,89 @@ router.get('/events', verifyToken, authorize('clubManager'), async (req, res) =>
     // Get all clubs managed by this manager
     const managerClubs = await clubsCollection.find({ managerEmail }).toArray();
     const clubIds = managerClubs.map(club => club._id.toString());
+    const clubObjectIds = managerClubs.map(club => club._id);
+
+    console.log(`[Manager Events] Manager email: ${managerEmail}`);
+    console.log(`[Manager Events] Found ${managerClubs.length} clubs:`, clubIds);
 
     if (clubIds.length === 0) {
+      console.log('[Manager Events] No clubs found for manager, returning empty result');
       return res.json({ events: [], stats: { total: 0, upcoming: 0, revenue: 0 } });
     }
 
-    // Build query
-    const query = { clubId: { $in: clubIds } };
-    
+    // Build query - handle both string and ObjectId formats for clubId
     const now = new Date();
+    
+    // Base clubId condition - handle both string and ObjectId formats
+    const clubIdCondition = {
+      $or: [
+        { clubId: { $in: clubIds } }, // String format
+        { clubId: { $in: clubObjectIds } } // ObjectId format
+      ]
+    };
+    
+    // Start with clubId condition
+    const queryConditions = [clubIdCondition];
+    
+    // Add filter conditions
     if (filter === 'upcoming') {
-      query.date = { $gte: now };
-      query.status = { $ne: 'cancelled' };
+      queryConditions.push({ date: { $gte: now } });
+      queryConditions.push({ status: { $ne: 'cancelled' } });
     } else if (filter === 'past') {
-      query.date = { $lt: now };
+      queryConditions.push({ date: { $lt: now } });
     } else if (filter === 'drafts') {
-      query.status = 'draft';
+      queryConditions.push({ status: 'draft' });
     }
     
+    // Add search condition if provided
     if (search) {
-      query.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { description: { $regex: search, $options: 'i' } }
-      ];
+      queryConditions.push({
+        $or: [
+          { name: { $regex: search, $options: 'i' } },
+          { description: { $regex: search, $options: 'i' } }
+        ]
+      });
     }
+    
+    // Build final query
+    const query = queryConditions.length > 1 ? { $and: queryConditions } : clubIdCondition;
+
+    console.log('[Manager Events] Query:', JSON.stringify(query, null, 2));
 
     // Get events
     const events = await eventsCollection.find(query).sort({ date: -1 }).toArray();
+    
+    console.log(`[Manager Events] Found ${events.length} events matching query`);
+    
+    // Debug: Check all events to see their clubId format
+    if (events.length === 0) {
+      const allEvents = await eventsCollection.find({}).limit(5).toArray();
+      console.log('[Manager Events] Sample events in database:', allEvents.map(e => ({
+        id: e._id.toString(),
+        name: e.name,
+        clubId: e.clubId,
+        clubIdType: typeof e.clubId
+      })));
+    }
 
-    // Get stats
-    const totalEvents = await eventsCollection.countDocuments({ clubId: { $in: clubIds } });
-    const upcomingEvents = await eventsCollection.countDocuments({
-      clubId: { $in: clubIds },
+    // Get stats - handle both string and ObjectId formats
+    const statsQuery = {
+      $or: [
+        { clubId: { $in: clubIds } },
+        { clubId: { $in: clubObjectIds } }
+      ]
+    };
+    const totalEvents = await eventsCollection.countDocuments(statsQuery);
+    const upcomingEventsQuery = {
+      ...statsQuery,
       date: { $gte: now },
       status: { $ne: 'cancelled' }
-    });
+    };
+    const upcomingEvents = await eventsCollection.countDocuments(upcomingEventsQuery);
 
     // Calculate revenue from events (simplified - sum prices of all events)
     // For more accurate revenue, we would need to calculate from actual registrations
-    const allEvents = await eventsCollection.find({ clubId: { $in: clubIds } }).toArray();
+    const allEvents = await eventsCollection.find(statsQuery).toArray();
     let revenue = 0;
     for (const event of allEvents) {
       const regCount = await registrationsCollection.countDocuments({
