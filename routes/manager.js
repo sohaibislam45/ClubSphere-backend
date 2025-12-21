@@ -505,7 +505,7 @@ router.get('/events', verifyToken, authorize('clubManager'), async (req, res) =>
       stats: {
         total: totalEvents,
         upcoming: upcomingEvents,
-        revenue: revenue / 100 // Convert cents to taka if stored as cents
+        revenue: revenue // Already converted to taka on line 473
       }
     });
   } catch (error) {
