@@ -157,9 +157,18 @@ router.get('/discover', verifyToken, authorize('member'), async (req, res) => {
       };
     }));
 
+    // Filter out joined clubs from topPicks
+    const topPicksFiltered = clubsWithDetails.filter(club => !club.isJoined);
+
     // Build query for events
     const now = new Date();
+    now.setHours(0, 0, 0, 0); // Start of today
     const eventQuery = {};
+    
+    // Calculate week from now for filtering
+    const weekFromNow = new Date();
+    weekFromNow.setDate(weekFromNow.getDate() + 7);
+    weekFromNow.setHours(23, 59, 59, 999); // End of the day 7 days from now
     
     if (filter === 'today') {
       const todayStart = new Date();
@@ -168,19 +177,31 @@ router.get('/discover', verifyToken, authorize('member'), async (req, res) => {
       todayEnd.setHours(23, 59, 59, 999);
       eventQuery.date = { $gte: todayStart, $lte: todayEnd };
     } else {
-      // Get events happening this week
-      const weekFromNow = new Date();
-      weekFromNow.setDate(weekFromNow.getDate() + 7);
-      eventQuery.date = { $gte: now, $lte: weekFromNow };
+      // Get events happening this week (next 7 days from today)
+      // Ensure we only get future events (from today onwards)
+      eventQuery.date = { 
+        $gte: now, 
+        $lte: weekFromNow 
+      };
     }
     
+    // Only get active events, not cancelled
+    // Exclude cancelled events and prefer active events
     eventQuery.status = { $ne: 'cancelled' };
 
     if (search) {
-      eventQuery.$or = [
+      // If search exists, we need to combine it with status filter
+      const searchConditions = [
         { name: { $regex: search, $options: 'i' } },
         { description: { $regex: search, $options: 'i' } }
       ];
+      
+      // Use $and to combine status filter with search
+      eventQuery.$and = [
+        { status: { $ne: 'cancelled' } },
+        { $or: searchConditions }
+      ];
+      delete eventQuery.status;
     }
 
     const events = await eventsCollection
@@ -188,9 +209,39 @@ router.get('/discover', verifyToken, authorize('member'), async (req, res) => {
       .sort({ date: 1 })
       .limit(10)
       .toArray();
+    
+    // Additional client-side filtering to ensure dates are valid and within range
+    const filteredEvents = events.filter(event => {
+      if (!event.date) return false;
+      
+      let eventDate;
+      if (event.date instanceof Date) {
+        eventDate = event.date;
+      } else if (typeof event.date === 'string') {
+        eventDate = new Date(event.date);
+      } else {
+        eventDate = new Date(event.date);
+      }
+      
+      // Check if date is valid
+      if (isNaN(eventDate.getTime())) return false;
+      
+      // Normalize dates to compare only date part (ignore time)
+      const eventDateOnly = new Date(eventDate.getFullYear(), eventDate.getMonth(), eventDate.getDate());
+      const nowDateOnly = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const weekFromNowDateOnly = new Date(weekFromNow.getFullYear(), weekFromNow.getMonth(), weekFromNow.getDate());
+      
+      // For "this week" filter, show events from today to 7 days from now
+      if (filter !== 'today') {
+        return eventDateOnly >= nowDateOnly && eventDateOnly <= weekFromNowDateOnly;
+      } else {
+        // For "today" filter, show only today's events
+        return eventDateOnly.getTime() === nowDateOnly.getTime();
+      }
+    });
 
     // Format events with registration counts
-    const eventsWithDetails = await Promise.all(events.map(async (event) => {
+    const eventsWithDetails = await Promise.all(filteredEvents.map(async (event) => {
       let club = null;
       if (event.clubId) {
         try {
@@ -242,7 +293,7 @@ router.get('/discover', verifyToken, authorize('member'), async (req, res) => {
     }
 
     res.json({
-      topPicks: clubsWithDetails,
+      topPicks: topPicksFiltered,
       events: eventsWithDetails,
       categories: categoryCounts
     });
