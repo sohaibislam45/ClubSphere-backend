@@ -261,13 +261,13 @@ router.put('/clubs/:id', verifyToken, authorize('clubManager'), async (req, res)
   }
 });
 
-// Delete club (verify ownership)
+// Request club deletion (creates deletion request for admin approval)
 router.delete('/clubs/:id', verifyToken, authorize('clubManager'), async (req, res) => {
   try {
     const { id } = req.params;
     const managerEmail = req.user.email;
 
-    // Verify club ownership
+    // Verify ownership
     const club = await clubsCollection.findOne({ 
       _id: new ObjectId(id),
       managerEmail 
@@ -277,16 +277,33 @@ router.delete('/clubs/:id', verifyToken, authorize('clubManager'), async (req, r
       return res.status(404).json({ error: 'Club not found or access denied' });
     }
 
-    // Delete the club
-    const result = await clubsCollection.deleteOne({ _id: new ObjectId(id) });
+    // Check if deletion request already exists
+    if (club.deletionRequest && club.deletionRequest.status === 'pending') {
+      return res.status(400).json({ error: 'Deletion request already pending for this club' });
+    }
 
-    if (result.deletedCount === 0) {
+    // Create deletion request
+    const deletionRequest = {
+      status: 'pending',
+      requestedAt: new Date(),
+      requestedBy: managerEmail
+    };
+
+    const result = await clubsCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { deletionRequest, updatedAt: new Date() } }
+    );
+
+    if (result.matchedCount === 0) {
       return res.status(404).json({ error: 'Club not found' });
     }
 
-    res.json({ message: 'Club deleted successfully' });
+    res.json({ 
+      message: 'Deletion request submitted successfully. It will be reviewed by an admin.',
+      deletionRequest
+    });
   } catch (error) {
-    console.error('Delete club error:', error);
+    console.error('Request club deletion error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

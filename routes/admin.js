@@ -9,6 +9,8 @@ let clubsCollection;
 let eventsCollection;
 let transactionsCollection;
 let categoriesCollection;
+let membershipsCollection;
+let registrationsCollection;
 
 // Initialize collections
 const initAdminRoutes = async (client) => {
@@ -18,6 +20,8 @@ const initAdminRoutes = async (client) => {
   eventsCollection = db.collection('events');
   transactionsCollection = db.collection('transactions');
   categoriesCollection = db.collection('categories');
+  membershipsCollection = db.collection('memberships');
+  registrationsCollection = db.collection('registrations');
   
   // Initialize default categories if collection is empty
   const categoryCount = await categoriesCollection.countDocuments();
@@ -189,6 +193,11 @@ router.get('/dashboard/stats', verifyToken, authorize('admin'), async (req, res)
     });
     const pendingClubsNew = pendingClubs - pendingClubsYesterday;
 
+    // Pending deletion requests
+    const pendingDeletionRequests = await clubsCollection.countDocuments({
+      'deletionRequest.status': 'pending'
+    });
+
     // Total revenue
     const revenueResult = await transactionsCollection.aggregate([
       {
@@ -249,6 +258,7 @@ router.get('/dashboard/stats', verifyToken, authorize('admin'), async (req, res)
       usersGrowth,
       pendingClubs,
       pendingClubsNew,
+      pendingDeletionRequests,
       totalRevenue: totalRevenue / 100, // Convert cents to taka
       revenueGrowth,
       activeEvents
@@ -302,6 +312,7 @@ router.get('/clubs', verifyToken, authorize('admin'), async (req, res) => {
     const limit = parseInt(req.query.limit) || 10;
     const search = req.query.search || '';
     const status = req.query.status || '';
+    const type = req.query.type || ''; // 'deletion' to filter deletion requests
     const skip = (page - 1) * limit;
 
     // Build query
@@ -314,6 +325,11 @@ router.get('/clubs', verifyToken, authorize('admin'), async (req, res) => {
     }
     if (status && status !== 'all') {
       query.status = status;
+    }
+    
+    // Filter by deletion requests if type='deletion'
+    if (type === 'deletion') {
+      query['deletionRequest.status'] = 'pending';
     }
 
     // Get clubs
@@ -338,7 +354,12 @@ router.get('/clubs', verifyToken, authorize('admin'), async (req, res) => {
       fee: club.fee || 'Free',
       status: club.status || 'pending',
       createdAt: formatDate(club.createdAt),
-      joinedDate: formatDate(club.createdAt)
+      joinedDate: formatDate(club.createdAt),
+      deletionRequest: club.deletionRequest ? {
+        status: club.deletionRequest.status,
+        requestedAt: formatDate(club.deletionRequest.requestedAt),
+        requestedBy: club.deletionRequest.requestedBy
+      } : null
     }));
 
     res.json({
@@ -534,6 +555,86 @@ router.put('/clubs/:id/reject', verifyToken, authorize('admin'), async (req, res
     res.json({ message: 'Club rejected successfully' });
   } catch (error) {
     console.error('Reject club error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Approve club deletion request
+router.put('/clubs/:id/approve-deletion', verifyToken, authorize('admin'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const adminEmail = req.user.email;
+
+    // Find the club and verify it has a pending deletion request
+    const club = await clubsCollection.findOne({ _id: new ObjectId(id) });
+
+    if (!club) {
+      return res.status(404).json({ error: 'Club not found' });
+    }
+
+    if (!club.deletionRequest || club.deletionRequest.status !== 'pending') {
+      return res.status(400).json({ error: 'No pending deletion request found for this club' });
+    }
+
+    const clubId = id;
+
+    // Cascade delete related data
+    // Delete events associated with this club
+    await eventsCollection.deleteMany({ clubId: clubId });
+
+    // Delete memberships for this club
+    await membershipsCollection.deleteMany({ clubId: clubId });
+
+    // Delete event registrations for events of this club (events already deleted, but cleanup any orphaned records)
+    await registrationsCollection.deleteMany({ clubId: clubId });
+
+    // Finally, delete the club
+    const result = await clubsCollection.deleteOne({ _id: new ObjectId(id) });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ error: 'Club not found' });
+    }
+
+    res.json({ message: 'Club deletion approved and club deleted successfully' });
+  } catch (error) {
+    console.error('Approve club deletion error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Reject club deletion request
+router.put('/clubs/:id/reject-deletion', verifyToken, authorize('admin'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const adminEmail = req.user.email;
+
+    // Find the club and verify it has a pending deletion request
+    const club = await clubsCollection.findOne({ _id: new ObjectId(id) });
+
+    if (!club) {
+      return res.status(404).json({ error: 'Club not found' });
+    }
+
+    if (!club.deletionRequest || club.deletionRequest.status !== 'pending') {
+      return res.status(400).json({ error: 'No pending deletion request found for this club' });
+    }
+
+    // Remove the deletionRequest field
+    const result = await clubsCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { 
+        $unset: { deletionRequest: '' },
+        $set: { updatedAt: new Date() }
+      }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ error: 'Club not found' });
+    }
+
+    res.json({ message: 'Deletion request rejected successfully. Club remains active.' });
+  } catch (error) {
+    console.error('Reject club deletion error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

@@ -56,7 +56,7 @@ app.get('/', (req, res) => {
 async function run() {
     try {
       // Connect the client to the server
-      await client.connect();
+      // await client.connect();
       
       // Initialize auth routes with MongoDB client
       const authRouter = initAuthRoutes(client);
@@ -283,7 +283,7 @@ async function run() {
             name: club.name,
             category: formattedCategory,
             location: club.location || '',
-            membershipFee: club.fee ? club.fee / 100 : 0, // Convert from cents to taka
+            membershipFee: club.fee || 0,
             memberCount: club.memberCount || 0,
             bannerImage: club.image || null,
             image: club.image || null,
@@ -398,7 +398,7 @@ async function run() {
               name: club.name, // Keep both for compatibility
               category: formattedCategory,
               location: club.location || '',
-              membershipFee: club.fee ? club.fee / 100 : 0, // Convert from cents to taka
+              membershipFee: club.fee || 0,
               memberCount: club.memberCount || 0,
               bannerImage: club.image || null,
               image: club.image || null, // Keep both for compatibility
@@ -582,8 +582,8 @@ async function run() {
 
 
       // Send a ping to confirm a successful connection
-      await client.db("admin").command({ ping: 1 });
-      console.log("Successfully connected to MongoDB!");
+      // await client.db("admin").command({ ping: 1 });
+      // console.log("Successfully connected to MongoDB!");
       
       // Start server only after database connection is established
       app.listen(port, () => {
