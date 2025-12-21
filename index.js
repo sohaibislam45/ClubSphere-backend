@@ -246,8 +246,16 @@ async function initializeRoutes() {
           const daysOfWeek = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
           const dayOfWeek = daysOfWeek[eventDate.getDay()];
           
-          // Get fee
-          const eventFee = event.fee || (event.type === 'Paid' ? (event.amount || 0) : 0);
+          // Get fee (prioritize fee over price for newer events)
+          let eventFee = 0;
+          if (event.fee !== undefined) {
+            eventFee = event.fee;
+          } else if (event.price !== undefined) {
+            // Price is stored in cents (legacy format), convert to taka
+            eventFee = event.price / 100;
+          } else if (event.type === 'Paid' && event.amount) {
+            eventFee = event.amount;
+          }
 
           return {
             id: event._id.toString(),
@@ -509,8 +517,16 @@ async function initializeRoutes() {
           const eventDate = event.date ? new Date(event.date) : new Date();
           const timeStr = event.time || '12:00 PM';
           
-          // Get fee from event (could be in fee field or type field)
-          const eventFee = event.fee || (event.type === 'Paid' ? (event.amount || 0) : 0);
+          // Get fee from event (prioritize fee over price for newer events)
+          let eventFee = 0;
+          if (event.fee !== undefined) {
+            eventFee = event.fee;
+          } else if (event.price !== undefined) {
+            // Price is stored in cents (legacy format), convert to taka
+            eventFee = event.price / 100;
+          } else if (event.type === 'Paid' && event.amount) {
+            eventFee = event.amount;
+          }
           const isPaid = eventFee > 0;
 
           return {
@@ -636,14 +652,14 @@ async function initializeRoutes() {
         const eventDate = event.date ? new Date(event.date) : new Date();
         const timeStr = event.time || '12:00 PM';
         
-        // Get fee from event (price is stored in cents, fee might be in taka)
+        // Get fee from event (prioritize fee over price for newer events)
         let eventFee = 0;
-        if (event.price !== undefined) {
-          // Price is stored in cents, convert to taka
-          eventFee = event.price / 100;
-        } else if (event.fee !== undefined) {
-          // Fee might already be in taka
+        if (event.fee !== undefined) {
+          // Fee is stored in taka (newer format)
           eventFee = event.fee;
+        } else if (event.price !== undefined) {
+          // Price is stored in cents (legacy format), convert to taka
+          eventFee = event.price / 100;
         } else if (event.type === 'Paid' && event.amount) {
           eventFee = event.amount;
         }

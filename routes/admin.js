@@ -911,6 +911,9 @@ router.put('/events/:id', verifyToken, authorize('admin'), async (req, res) => {
 
     // Prepare update data
     const updateData = { ...restData, updatedAt: new Date() };
+    
+    // Remove $unset from restData if it exists (it shouldn't be in the body)
+    delete updateData.$unset;
 
     // If date is provided, combine with time if available
     if (date) {
@@ -936,9 +939,21 @@ router.put('/events/:id', verifyToken, authorize('admin'), async (req, res) => {
       updateData.maxAttendees = updateData.maxAttendees ? parseInt(updateData.maxAttendees) : null;
     }
 
+    // If fee is being updated, remove the old price field (legacy format)
+    const unsetData = {};
+    if (updateData.fee !== undefined) {
+      unsetData.price = '';
+    }
+
+    // Build update operation
+    const updateOperation = { $set: updateData };
+    if (Object.keys(unsetData).length > 0) {
+      updateOperation.$unset = unsetData;
+    }
+
     const result = await eventsCollection.updateOne(
       { _id: new ObjectId(id) },
-      { $set: updateData }
+      updateOperation
     );
 
     if (result.matchedCount === 0) {
