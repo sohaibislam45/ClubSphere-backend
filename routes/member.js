@@ -163,85 +163,85 @@ router.get('/discover', verifyToken, authorize('member'), async (req, res) => {
     // Build query for events
     const now = new Date();
     now.setHours(0, 0, 0, 0); // Start of today
-    const eventQuery = {};
     
     // Calculate week from now for filtering
     const weekFromNow = new Date();
     weekFromNow.setDate(weekFromNow.getDate() + 7);
     weekFromNow.setHours(23, 59, 59, 999); // End of the day 7 days from now
     
-    if (filter === 'today') {
-      const todayStart = new Date();
-      todayStart.setHours(0, 0, 0, 0);
-      const todayEnd = new Date();
-      todayEnd.setHours(23, 59, 59, 999);
-      eventQuery.date = { $gte: todayStart, $lte: todayEnd };
-    } else {
-      // Get events happening this week (next 7 days from today)
-      // Ensure we only get future events (from today onwards)
-      eventQuery.date = { 
-        $gte: now, 
-        $lte: weekFromNow 
-      };
-    }
-    
-    // Only get active events, not cancelled
-    // Exclude cancelled events and prefer active events
-    eventQuery.status = { $ne: 'cancelled' };
+    // Build base query - get all upcoming events (not cancelled)
+    // We'll filter by date in JavaScript since dates might be stored as strings
+    const eventQuery = {
+      status: { $ne: 'cancelled' }
+    };
 
+    // Add search filter if provided
     if (search) {
-      // If search exists, we need to combine it with status filter
-      const searchConditions = [
+      eventQuery.$or = [
         { name: { $regex: search, $options: 'i' } },
         { description: { $regex: search, $options: 'i' } }
       ];
-      
-      // Use $and to combine status filter with search
-      eventQuery.$and = [
-        { status: { $ne: 'cancelled' } },
-        { $or: searchConditions }
-      ];
-      delete eventQuery.status;
     }
 
-    const events = await eventsCollection
+    // Fetch all upcoming events (we'll filter by date range in JavaScript)
+    // Get more events than needed to account for filtering
+    const allEvents = await eventsCollection
       .find(eventQuery)
       .sort({ date: 1 })
-      .limit(10)
+      .limit(50) // Get more events to filter from
       .toArray();
     
-    // Additional client-side filtering to ensure dates are valid and within range
-    const filteredEvents = events.filter(event => {
+    // Filter events by date range in JavaScript (handles both Date objects and strings)
+    const filteredEvents = allEvents.filter(event => {
       if (!event.date) return false;
       
+      // Convert date to Date object regardless of how it's stored
       let eventDate;
-      if (event.date instanceof Date) {
-        eventDate = event.date;
-      } else if (typeof event.date === 'string') {
-        eventDate = new Date(event.date);
-      } else {
-        eventDate = new Date(event.date);
+      try {
+        if (event.date instanceof Date) {
+          eventDate = event.date;
+        } else if (typeof event.date === 'string') {
+          eventDate = new Date(event.date);
+        } else if (event.date.toDate && typeof event.date.toDate === 'function') {
+          // Handle Firestore Timestamp if present
+          eventDate = event.date.toDate();
+        } else {
+          eventDate = new Date(event.date);
+        }
+      } catch (e) {
+        console.error('Error parsing event date:', event.date, e);
+        return false;
       }
       
       // Check if date is valid
-      if (isNaN(eventDate.getTime())) return false;
+      if (isNaN(eventDate.getTime())) {
+        console.warn('Invalid event date:', event.date, 'for event:', event.name);
+        return false;
+      }
       
       // Normalize dates to compare only date part (ignore time)
       const eventDateOnly = new Date(eventDate.getFullYear(), eventDate.getMonth(), eventDate.getDate());
       const nowDateOnly = new Date(now.getFullYear(), now.getMonth(), now.getDate());
       const weekFromNowDateOnly = new Date(weekFromNow.getFullYear(), weekFromNow.getMonth(), weekFromNow.getDate());
       
-      // For "this week" filter, show events from today to 7 days from now
-      if (filter !== 'today') {
-        return eventDateOnly >= nowDateOnly && eventDateOnly <= weekFromNowDateOnly;
-      } else {
+      // For "this week" filter (default), show events from today to 7 days from now
+      if (filter === 'today') {
         // For "today" filter, show only today's events
         return eventDateOnly.getTime() === nowDateOnly.getTime();
+      } else {
+        // Default: show events from today to 7 days from now
+        return eventDateOnly >= nowDateOnly && eventDateOnly <= weekFromNowDateOnly;
       }
     });
+    
+    // Limit to 10 events after filtering
+    const events = filteredEvents.slice(0, 10);
+    
+    // Debug logging
+    console.log(`[Discover] Found ${allEvents.length} total events, ${filteredEvents.length} in date range, returning ${events.length} events`);
 
     // Format events with registration counts
-    const eventsWithDetails = await Promise.all(filteredEvents.map(async (event) => {
+    const eventsWithDetails = await Promise.all(events.map(async (event) => {
       let club = null;
       if (event.clubId) {
         try {
