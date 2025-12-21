@@ -469,6 +469,70 @@ async function initializeRoutes() {
       }
     });
 
+    // Endpoint to check if user is registered for an event (optional auth)
+    app.get('/api/events/:id/registration', async (req, res) => {
+      try {
+        const db = client.db('clubsphere');
+        const registrationsCollection = db.collection('registrations');
+        const { id } = req.params;
+        
+        // Get userId from token if available (optional auth)
+        const token = req.headers.authorization?.split(' ')[1];
+        let userId = null;
+        
+        if (token) {
+          try {
+            const jwt = require('jsonwebtoken');
+            const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+            userId = decoded.userId;
+          } catch (error) {
+            // Token invalid or expired, but that's okay - just return not registered
+            userId = null;
+          }
+        }
+
+        if (!userId) {
+          return res.json({ isRegistered: false, registration: null });
+        }
+
+        // Check if registration exists - try both string and ObjectId formats
+        let registration = await registrationsCollection.findOne({
+          userId: userId,
+          $or: [
+            { eventId: id.toString() },
+            { eventId: id }
+          ],
+          status: { $in: ['registered', 'pending'] }
+        });
+
+        // If not found and id is a valid ObjectId, try with ObjectId string
+        if (!registration && ObjectId.isValid(id)) {
+          registration = await registrationsCollection.findOne({
+            userId: userId,
+            eventId: new ObjectId(id).toString(),
+            status: { $in: ['registered', 'pending'] }
+          });
+        }
+
+        if (registration) {
+          return res.json({ 
+            isRegistered: true, 
+            registration: {
+              id: registration._id.toString(),
+              status: registration.status,
+              paymentStatus: registration.paymentStatus,
+              registrationDate: registration.registrationDate
+            }
+          });
+        }
+
+        res.json({ isRegistered: false, registration: null });
+      } catch (error) {
+        console.error('Check registration error:', error);
+        res.status(500).json({ error: 'Internal server error', message: error.message });
+      }
+    });
+
     // Public endpoint to fetch all clubs with search and filter (no authentication required)
     app.get('/api/clubs', async (req, res) => {
       try {
