@@ -8,6 +8,8 @@ const { verifyToken } = require('../middleware/auth');
 let eventsCollection;
 let registrationsCollection;
 let usersCollection;
+let clubsCollection;
+let membershipsCollection;
 
 // Initialize collections
 const initPaymentRoutes = (client) => {
@@ -15,6 +17,8 @@ const initPaymentRoutes = (client) => {
   eventsCollection = db.collection('events');
   registrationsCollection = db.collection('registrations');
   usersCollection = db.collection('users');
+  clubsCollection = db.collection('clubs');
+  membershipsCollection = db.collection('memberships');
   return router;
 };
 
@@ -312,6 +316,262 @@ router.post('/register-free', verifyToken, async (req, res) => {
     });
   } catch (error) {
     console.error('Free registration error:', error);
+    res.status(500).json({ error: 'Failed to register', message: error.message });
+  }
+});
+
+// ==================== CLUB MEMBERSHIP PAYMENT ====================
+
+// Create payment intent for club membership
+router.post('/club/create-intent', verifyToken, async (req, res) => {
+  try {
+    const { clubId } = req.body;
+    const userId = req.user.userId;
+
+    if (!clubId) {
+      return res.status(400).json({ error: 'Club ID is required' });
+    }
+
+    // Get club details
+    let club;
+    if (ObjectId.isValid(clubId)) {
+      club = await clubsCollection.findOne({ _id: new ObjectId(clubId) });
+    } else {
+      club = await clubsCollection.findOne({ _id: clubId });
+    }
+
+    if (!club) {
+      return res.status(404).json({ error: 'Club not found' });
+    }
+
+    // Check if club is active
+    if (club.status && club.status !== 'active') {
+      return res.status(400).json({ error: 'Club is not available' });
+    }
+
+    // Check if user already has membership
+    const existingMembership = await membershipsCollection.findOne({
+      userId,
+      clubId: clubId.toString(),
+      status: { $in: ['active', 'pending'] }
+    });
+
+    if (existingMembership) {
+      return res.status(400).json({ error: 'You are already a member of this club' });
+    }
+
+    // Get membership fee
+    const membershipFee = club.fee || 0;
+
+    if (membershipFee <= 0) {
+      return res.status(400).json({ error: 'Club is free, use direct registration' });
+    }
+
+    const serviceFee = calculateServiceFee(membershipFee);
+    const totalAmount = membershipFee + serviceFee;
+
+    // Convert to cents for Stripe
+    const amountInCents = Math.round(totalAmount * 100);
+
+    // Create payment intent with Stripe
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: amountInCents,
+      currency: 'usd', // Using USD for test mode
+      metadata: {
+        clubId: clubId.toString(),
+        userId: userId,
+        membershipFee: membershipFee.toString(),
+        serviceFee: serviceFee.toString(),
+        totalAmount: totalAmount.toString(),
+        type: 'club_membership'
+      },
+      description: `Club Membership: ${club.name || 'Club'}`
+    });
+
+    res.json({
+      clientSecret: paymentIntent.client_secret,
+      paymentIntentId: paymentIntent.id,
+      amount: totalAmount,
+      membershipFee,
+      serviceFee
+    });
+  } catch (error) {
+    console.error('Create club payment intent error:', error);
+    res.status(500).json({ error: 'Failed to create payment intent', message: error.message });
+  }
+});
+
+// Confirm club membership payment and create membership
+router.post('/club/confirm', verifyToken, async (req, res) => {
+  try {
+    const { paymentIntentId, clubId } = req.body;
+    const userId = req.user.userId;
+
+    if (!paymentIntentId || !clubId) {
+      return res.status(400).json({ error: 'Payment intent ID and club ID are required' });
+    }
+
+    // Verify payment intent with Stripe
+    const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+
+    if (paymentIntent.status !== 'succeeded') {
+      return res.status(400).json({ error: 'Payment not completed' });
+    }
+
+    // Verify metadata matches
+    if (paymentIntent.metadata.clubId !== clubId.toString() || 
+        paymentIntent.metadata.userId !== userId ||
+        paymentIntent.metadata.type !== 'club_membership') {
+      return res.status(400).json({ error: 'Payment intent mismatch' });
+    }
+
+    // Check if membership already exists
+    const existingMembership = await membershipsCollection.findOne({
+      userId,
+      clubId: clubId.toString(),
+      status: { $in: ['active', 'pending'] }
+    });
+
+    if (existingMembership) {
+      return res.status(400).json({ 
+        error: 'Membership already exists',
+        membershipId: existingMembership._id.toString()
+      });
+    }
+
+    // Get club details
+    let club;
+    if (ObjectId.isValid(clubId)) {
+      club = await clubsCollection.findOne({ _id: new ObjectId(clubId) });
+    } else {
+      club = await clubsCollection.findOne({ _id: clubId });
+    }
+
+    if (!club) {
+      return res.status(404).json({ error: 'Club not found' });
+    }
+
+    // Calculate expiry date (1 month from now)
+    const joinDate = new Date();
+    const expiryDate = new Date();
+    expiryDate.setMonth(expiryDate.getMonth() + 1);
+
+    // Create membership
+    const membership = {
+      userId,
+      clubId: clubId.toString(),
+      status: 'active',
+      paymentStatus: 'paid',
+      paymentIntentId,
+      amount: parseFloat(paymentIntent.metadata.totalAmount),
+      membershipFee: parseFloat(paymentIntent.metadata.membershipFee),
+      serviceFee: parseFloat(paymentIntent.metadata.serviceFee),
+      currency: 'bdt',
+      joinDate: joinDate,
+      expiryDate: expiryDate,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    const result = await membershipsCollection.insertOne(membership);
+
+    // Update club member count
+    await clubsCollection.updateOne(
+      { _id: ObjectId.isValid(clubId) ? new ObjectId(clubId) : clubId },
+      { $inc: { memberCount: 1 } }
+    );
+
+    res.json({
+      success: true,
+      membershipId: result.insertedId.toString(),
+      message: 'Membership successful'
+    });
+  } catch (error) {
+    console.error('Confirm club payment error:', error);
+    res.status(500).json({ error: 'Failed to confirm payment', message: error.message });
+  }
+});
+
+// Register for free club (direct registration without payment)
+router.post('/club/register-free', verifyToken, async (req, res) => {
+  try {
+    const { clubId } = req.body;
+    const userId = req.user.userId;
+
+    if (!clubId) {
+      return res.status(400).json({ error: 'Club ID is required' });
+    }
+
+    // Get club details
+    let club;
+    if (ObjectId.isValid(clubId)) {
+      club = await clubsCollection.findOne({ _id: new ObjectId(clubId) });
+    } else {
+      club = await clubsCollection.findOne({ _id: clubId });
+    }
+
+    if (!club) {
+      return res.status(404).json({ error: 'Club not found' });
+    }
+
+    // Check if club is active
+    if (club.status && club.status !== 'active') {
+      return res.status(400).json({ error: 'Club is not available' });
+    }
+
+    // Check if club is free
+    const membershipFee = club.fee || 0;
+
+    if (membershipFee > 0) {
+      return res.status(400).json({ error: 'Club is not free, use payment flow' });
+    }
+
+    // Check if user already has membership
+    const existingMembership = await membershipsCollection.findOne({
+      userId,
+      clubId: clubId.toString(),
+      status: { $in: ['active', 'pending'] }
+    });
+
+    if (existingMembership) {
+      return res.status(400).json({ error: 'You are already a member of this club' });
+    }
+
+    // Calculate expiry date (1 month from now, or set to null for free clubs)
+    const joinDate = new Date();
+    const expiryDate = null; // Free clubs don't expire
+
+    // Create membership
+    const membership = {
+      userId,
+      clubId: clubId.toString(),
+      status: 'active',
+      paymentStatus: 'free',
+      amount: 0,
+      membershipFee: 0,
+      serviceFee: 0,
+      currency: 'bdt',
+      joinDate: joinDate,
+      expiryDate: expiryDate,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    const result = await membershipsCollection.insertOne(membership);
+
+    // Update club member count
+    await clubsCollection.updateOne(
+      { _id: ObjectId.isValid(clubId) ? new ObjectId(clubId) : clubId },
+      { $inc: { memberCount: 1 } }
+    );
+
+    res.json({
+      success: true,
+      membershipId: result.insertedId.toString(),
+      message: 'Membership successful'
+    });
+  } catch (error) {
+    console.error('Free club registration error:', error);
     res.status(500).json({ error: 'Failed to register', message: error.message });
   }
 });
