@@ -473,6 +473,66 @@ router.get('/events', verifyToken, authorize('member'), async (req, res) => {
   }
 });
 
+// Cancel event registration
+router.delete('/events/:registrationId/cancel', verifyToken, authorize('member'), async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const registrationId = req.params.registrationId;
+
+    if (!registrationsCollection) {
+      return res.status(500).json({ error: 'Server configuration error' });
+    }
+
+    // Find the registration
+    let registration;
+    try {
+      registration = await registrationsCollection.findOne({ 
+        _id: new ObjectId(registrationId),
+        userId: userId 
+      });
+    } catch (error) {
+      return res.status(400).json({ error: 'Invalid registration ID' });
+    }
+
+    if (!registration) {
+      return res.status(404).json({ error: 'Registration not found' });
+    }
+
+    // Check if already cancelled
+    if (registration.status === 'cancelled') {
+      return res.status(400).json({ error: 'Registration is already cancelled' });
+    }
+
+    // Check if event is in the past
+    if (registration.eventId) {
+      const event = await eventsCollection.findOne({ _id: new ObjectId(registration.eventId) });
+      if (event && event.date) {
+        const eventDate = new Date(event.date);
+        if (eventDate < new Date()) {
+          return res.status(400).json({ error: 'Cannot cancel registration for past events' });
+        }
+      }
+    }
+
+    // Update registration status to cancelled
+    await registrationsCollection.updateOne(
+      { _id: new ObjectId(registrationId) },
+      { 
+        $set: { 
+          status: 'cancelled',
+          cancelledAt: new Date(),
+          updatedAt: new Date()
+        } 
+      }
+    );
+
+    res.json({ message: 'Registration cancelled successfully' });
+  } catch (error) {
+    console.error('Cancel registration error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // ==================== PAYMENT HISTORY ====================
 
 // Get user's payment history
