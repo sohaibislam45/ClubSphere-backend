@@ -348,7 +348,7 @@ router.get('/clubs', verifyToken, authorize('member'), async (req, res) => {
 router.get('/events', verifyToken, authorize('member'), async (req, res) => {
   try {
     const userId = req.user.userId;
-    const tab = req.query.tab || 'upcoming'; // upcoming, waitlist, past, cancelled
+    const tab = req.query.tab || 'my-joining'; // my-joining: all future registrations/waitlist, upcoming: future registered, joined: past registered, cancelled: cancelled
     const search = req.query.search || '';
 
     const now = new Date();
@@ -356,11 +356,12 @@ router.get('/events', verifyToken, authorize('member'), async (req, res) => {
     // Build query based on tab
     const query = { userId };
     
-    if (tab === 'upcoming') {
+    if (tab === 'my-joining') {
+      // My Joining Events: registered or waitlisted (all active registrations)
+      query.status = { $in: ['registered', 'waitlisted'] };
+    } else if (tab === 'upcoming') {
       query.status = 'registered';
-    } else if (tab === 'waitlist') {
-      query.status = 'waitlisted';
-    } else if (tab === 'past') {
+    } else if (tab === 'joined') {
       query.status = 'registered';
     } else if (tab === 'cancelled') {
       query.status = 'cancelled';
@@ -396,8 +397,12 @@ router.get('/events', verifyToken, authorize('member'), async (req, res) => {
       const isTodayOrFuture = eventDateOnly >= nowDateOnly;
 
       // Filter by date based on tab
+      if (tab === 'my-joining' && isPast) return null; // Only show future events for "my joining"
       if (tab === 'upcoming' && isPast) return null;
-      if (tab === 'past' && isTodayOrFuture) return null;
+      if (tab === 'joined' && isTodayOrFuture) return null; // Only show past events for "joined"
+      if (tab === 'cancelled') {
+        // Cancelled events can be from any time, no date filter needed
+      }
 
       let statusLabel = 'Confirmed';
       let statusColor = 'primary';
@@ -437,30 +442,32 @@ router.get('/events', verifyToken, authorize('member'), async (req, res) => {
 
     // Get counts for tabs - need to check event dates
     const allRegistrations = await registrationsCollection.find({ userId }).toArray();
+    let myJoiningCount = 0;
     let upcomingCount = 0;
-    let pastCount = 0;
-    const waitlistCount = await registrationsCollection.countDocuments({
-      userId,
-      status: 'waitlisted'
-    });
+    let joinedCount = 0;
     const cancelledCount = await registrationsCollection.countDocuments({
       userId,
       status: 'cancelled'
     });
 
-    // Count upcoming and past by checking event dates
+    // Count events by checking event dates and status
     for (const reg of allRegistrations) {
-      if (reg.status === 'registered') {
-        const event = await eventsCollection.findOne({ _id: new ObjectId(reg.eventId) });
-        if (event) {
-          const eventDate = event.date ? new Date(event.date) : new Date();
-          // Normalize dates to compare only date part (ignore time)
-          const eventDateOnly = new Date(eventDate.getFullYear(), eventDate.getMonth(), eventDate.getDate());
-          const nowDateOnly = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-          if (eventDateOnly >= nowDateOnly) {
-            upcomingCount++;
-          } else {
-            pastCount++;
+      const event = await eventsCollection.findOne({ _id: new ObjectId(reg.eventId) });
+      if (event) {
+        const eventDate = event.date ? new Date(event.date) : new Date();
+        // Normalize dates to compare only date part (ignore time)
+        const eventDateOnly = new Date(eventDate.getFullYear(), eventDate.getMonth(), eventDate.getDate());
+        const nowDateOnly = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const isFuture = eventDateOnly >= nowDateOnly;
+        
+        if (reg.status === 'registered' || reg.status === 'waitlisted') {
+          if (isFuture) {
+            myJoiningCount++; // Count for "My Joining Events"
+            if (reg.status === 'registered') {
+              upcomingCount++; // Count for "Upcoming"
+            }
+          } else if (reg.status === 'registered') {
+            joinedCount++; // Count for "Joined" (past events)
           }
         }
       }
@@ -469,9 +476,9 @@ router.get('/events', verifyToken, authorize('member'), async (req, res) => {
     res.json({
       events: filteredEvents,
       counts: {
+        'my-joining': myJoiningCount,
         upcoming: upcomingCount,
-        waitlist: waitlistCount,
-        past: pastCount,
+        joined: joinedCount,
         cancelled: cancelledCount
       }
     });
