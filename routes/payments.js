@@ -1,8 +1,26 @@
 const express = require('express');
 const router = express.Router();
 const { ObjectId } = require('mongodb');
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const { verifyToken } = require('../middleware/auth');
+
+// Initialize Stripe - will be set when env var is available
+let stripe = null;
+
+const initializeStripe = () => {
+  if (process.env.STRIPE_SECRET_KEY) {
+    if (!stripe) {
+      stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+      console.log('Stripe initialized successfully');
+    }
+    return stripe;
+  } else {
+    console.warn('WARNING: STRIPE_SECRET_KEY not found in environment variables');
+    return null;
+  }
+};
+
+// Initialize on module load
+initializeStripe();
 
 // MongoDB collections (will be initialized from index.js)
 let eventsCollection;
@@ -31,6 +49,22 @@ const calculateServiceFee = (eventFee) => {
 // Create payment intent
 router.post('/create-intent', verifyToken, async (req, res) => {
   try {
+    // Check if collections are initialized
+    if (!eventsCollection || !registrationsCollection) {
+      console.error('Collections not initialized');
+      return res.status(500).json({ error: 'Server configuration error' });
+    }
+
+    // Check if Stripe is configured
+    if (!stripe) {
+      // Try to initialize if not already done
+      initializeStripe();
+      if (!stripe || !process.env.STRIPE_SECRET_KEY) {
+        console.error('STRIPE_SECRET_KEY not configured');
+        return res.status(500).json({ error: 'Payment service not configured. Please set STRIPE_SECRET_KEY in environment variables.' });
+      }
+    }
+
     const { eventId } = req.body;
     const userId = req.user.userId;
 
@@ -142,6 +176,13 @@ router.post('/confirm', verifyToken, async (req, res) => {
     }
 
     // Verify payment intent with Stripe
+    if (!stripe) {
+      initializeStripe();
+      if (!stripe) {
+        return res.status(500).json({ error: 'Payment service not available' });
+      }
+    }
+    
     const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
 
     if (paymentIntent.status !== 'succeeded') {
@@ -214,6 +255,13 @@ router.get('/intent/:intentId', verifyToken, async (req, res) => {
   try {
     const { intentId } = req.params;
 
+    if (!stripe) {
+      initializeStripe();
+      if (!stripe) {
+        return res.status(500).json({ error: 'Payment service not available' });
+      }
+    }
+    
     const paymentIntent = await stripe.paymentIntents.retrieve(intentId);
 
     res.json({
@@ -325,6 +373,23 @@ router.post('/register-free', verifyToken, async (req, res) => {
 // Create payment intent for club membership
 router.post('/club/create-intent', verifyToken, async (req, res) => {
   try {
+    // Check if collections are initialized
+    if (!clubsCollection || !membershipsCollection) {
+      console.error('Collections not initialized');
+      return res.status(500).json({ error: 'Server configuration error' });
+    }
+
+    // Check if Stripe is configured
+    if (!stripe) {
+      // Try to initialize if not already done
+      initializeStripe();
+      if (!stripe || !process.env.STRIPE_SECRET_KEY) {
+        console.error('STRIPE_SECRET_KEY not configured');
+        console.error('Current env vars:', Object.keys(process.env).filter(k => k.includes('STRIPE')));
+        return res.status(500).json({ error: 'Payment service not configured. Please set STRIPE_SECRET_KEY in environment variables.' });
+      }
+    }
+
     const { clubId } = req.body;
     const userId = req.user.userId;
 
@@ -397,13 +462,30 @@ router.post('/club/create-intent', verifyToken, async (req, res) => {
     });
   } catch (error) {
     console.error('Create club payment intent error:', error);
-    res.status(500).json({ error: 'Failed to create payment intent', message: error.message });
+    console.error('Error stack:', error.stack);
+    res.status(500).json({ 
+      error: 'Failed to create payment intent', 
+      message: error.message,
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
 });
 
 // Confirm club membership payment and create membership
 router.post('/club/confirm', verifyToken, async (req, res) => {
   try {
+    // Check if collections are initialized
+    if (!clubsCollection || !membershipsCollection) {
+      console.error('Collections not initialized');
+      return res.status(500).json({ error: 'Server configuration error' });
+    }
+
+    // Check if Stripe is configured
+    if (!stripe || !process.env.STRIPE_SECRET_KEY) {
+      console.error('STRIPE_SECRET_KEY not configured');
+      return res.status(500).json({ error: 'Payment service not configured' });
+    }
+
     const { paymentIntentId, clubId } = req.body;
     const userId = req.user.userId;
 
@@ -412,6 +494,13 @@ router.post('/club/confirm', verifyToken, async (req, res) => {
     }
 
     // Verify payment intent with Stripe
+    if (!stripe) {
+      initializeStripe();
+      if (!stripe) {
+        return res.status(500).json({ error: 'Payment service not available' });
+      }
+    }
+    
     const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
 
     if (paymentIntent.status !== 'succeeded') {
