@@ -7,6 +7,7 @@ const { initAuthRoutes } = require('./routes/auth');
 const { initAdminRoutes } = require('./routes/admin');
 const { initManagerRoutes } = require('./routes/manager');
 const { initMemberRoutes } = require('./routes/member');
+const { initPaymentRoutes } = require('./routes/payments');
 const { verifyToken } = require('./middleware/auth');
 const app = express();
 const port = process.env.PORT || 3000;
@@ -126,6 +127,10 @@ async function initializeRoutes() {
     // Initialize member routes with MongoDB client
     const memberRouter = initMemberRoutes(db);
     app.use('/api/member', memberRouter);
+
+    // Initialize payment routes with MongoDB client
+    const paymentRouter = initPaymentRoutes(db);
+    app.use('/api/payments', paymentRouter);
 
     // Public endpoint to fetch active/featured clubs (no authentication required)
     // IMPORTANT: This must come BEFORE /api/clubs/:id to avoid route conflicts
