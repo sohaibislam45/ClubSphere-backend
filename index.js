@@ -428,6 +428,47 @@ async function initializeRoutes() {
       }
     });
 
+    // Endpoint to get all club IDs user is a member of (optional auth)
+    app.get('/api/memberships/my-clubs', async (req, res) => {
+      try {
+        const db = client.db('clubsphere');
+        const membershipsCollection = db.collection('memberships');
+        
+        // Get userId from token if available (optional auth)
+        const token = req.headers.authorization?.split(' ')[1];
+        let userId = null;
+        
+        if (token) {
+          try {
+            const jwt = require('jsonwebtoken');
+            const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+            userId = decoded.userId;
+          } catch (error) {
+            // Token invalid or expired, return empty array
+            return res.json({ clubIds: [] });
+          }
+        }
+
+        if (!userId) {
+          return res.json({ clubIds: [] });
+        }
+
+        // Get all active memberships for the user
+        const memberships = await membershipsCollection.find({
+          userId: userId,
+          status: { $in: ['active', 'pending'] }
+        }).toArray();
+
+        // Extract club IDs
+        const clubIds = memberships.map(m => m.clubId.toString());
+
+        res.json({ clubIds });
+      } catch (error) {
+        console.error('Get user memberships error:', error);
+        res.status(500).json({ error: 'Internal server error', message: error.message });
+      }
+    });
+
     // Public endpoint to fetch all clubs with search and filter (no authentication required)
     app.get('/api/clubs', async (req, res) => {
       try {
