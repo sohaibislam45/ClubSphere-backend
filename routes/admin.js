@@ -1116,9 +1116,26 @@ router.get('/finances', verifyToken, authorize('admin'), async (req, res) => {
 
     // Build query
     const query = {};
+    
+    // If searching, we need to find user IDs first, then search transactions
+    let userIdsForSearch = [];
     if (search) {
-      query.userEmail = { $regex: search, $options: 'i' };
+      const searchUsers = await usersCollection.find({
+        $or: [
+          { email: { $regex: search, $options: 'i' } },
+          { name: { $regex: search, $options: 'i' } }
+        ]
+      }).toArray();
+      userIdsForSearch = searchUsers.map(u => u._id.toString());
     }
+    
+    if (search && userIdsForSearch.length > 0) {
+      query.userId = { $in: userIdsForSearch };
+    } else if (search && userIdsForSearch.length === 0) {
+      // If search term doesn't match any users, return empty results
+      query._id = { $in: [] };
+    }
+    
     if (status && status !== 'all') {
       query.status = status;
     }
@@ -1137,23 +1154,151 @@ router.get('/finances', verifyToken, authorize('admin'), async (req, res) => {
     // Get total count
     const total = await transactionsCollection.countDocuments(query);
 
+    // Fetch user information for all transactions
+    const userIds = [...new Set(transactions.map(t => t.userId).filter(Boolean))];
+    
+    // Convert all userIds to ObjectIds for query, handling both string and ObjectId formats
+    const userIdObjects = userIds.map(id => {
+      if (!id) return null;
+      try {
+        // Handle string userIds
+        if (typeof id === 'string' && ObjectId.isValid(id)) {
+          return new ObjectId(id);
+        }
+        // If it's already an ObjectId, return as is
+        if (id instanceof ObjectId) {
+          return id;
+        }
+        // Try to convert if it's an object with toString
+        if (id && typeof id.toString === 'function') {
+          const idStr = id.toString();
+          if (ObjectId.isValid(idStr)) {
+            return new ObjectId(idStr);
+          }
+        }
+        return null;
+      } catch (err) {
+        console.error('Error converting userId to ObjectId:', id, err);
+        return null;
+      }
+    }).filter(Boolean);
+    
+    const users = userIdObjects.length > 0 ? await usersCollection.find({
+      _id: { $in: userIdObjects }
+    }).toArray() : [];
+    
+    const userMap = new Map();
+    users.forEach(user => {
+      // Always use string version as key for consistent lookup
+      const userIdStr = user._id.toString();
+      const userInfo = {
+        name: user.name || '',
+        email: user.email || '',
+        photoURL: user.photoURL || null
+      };
+      userMap.set(userIdStr, userInfo);
+    });
+
+    // Fetch club and event information if needed
+    const clubIds = [...new Set(transactions.map(t => t.clubId).filter(Boolean))];
+    const eventIds = [...new Set(transactions.map(t => t.eventId).filter(Boolean))];
+    
+    const clubs = clubIds.length > 0 ? await clubsCollection.find({
+      _id: { $in: clubIds.map(id => {
+        try {
+          return ObjectId.isValid(id) ? new ObjectId(id) : id;
+        } catch {
+          return id;
+        }
+      })}
+    }).toArray() : [];
+    
+    const events = eventIds.length > 0 ? await eventsCollection.find({
+      _id: { $in: eventIds.map(id => {
+        try {
+          return ObjectId.isValid(id) ? new ObjectId(id) : id;
+        } catch {
+          return id;
+        }
+      })}
+    }).toArray() : [];
+    
+    const clubMap = new Map();
+    clubs.forEach(club => {
+      clubMap.set(club._id.toString(), club.name || '');
+    });
+    
+    const eventMap = new Map();
+    events.forEach(event => {
+      eventMap.set(event._id.toString(), event.name || '');
+    });
+
     // Format response
     const formattedTransactions = transactions.map(transaction => {
       const amount = typeof transaction.amount === 'number' 
         ? (transaction.amount / 100).toFixed(2) 
         : parseFloat(transaction.amount || 0).toFixed(2);
 
+      // Get user information
+      let userName = '';
+      let userEmail = '';
+      let userPhotoURL = null;
+      
+      if (transaction.userId) {
+        // Normalize userId to string for lookup
+        let userIdStr = '';
+        try {
+          if (transaction.userId instanceof ObjectId) {
+            userIdStr = transaction.userId.toString();
+          } else if (typeof transaction.userId === 'string') {
+            userIdStr = transaction.userId;
+          } else if (transaction.userId && typeof transaction.userId.toString === 'function') {
+            userIdStr = transaction.userId.toString();
+          } else {
+            userIdStr = String(transaction.userId);
+          }
+        } catch (err) {
+          console.error('Error converting transaction.userId to string:', transaction.userId, err);
+          userIdStr = String(transaction.userId);
+        }
+        
+        // Look up user info
+        const userInfo = userMap.get(userIdStr);
+        if (userInfo) {
+          userName = userInfo.name;
+          userEmail = userInfo.email;
+          userPhotoURL = userInfo.photoURL;
+        } else {
+          // Debug: log if user not found (only in development)
+          if (process.env.NODE_ENV !== 'production') {
+            console.warn('User not found for transaction:', {
+              transactionId: transaction._id?.toString(),
+              userId: transaction.userId,
+              userIdStr: userIdStr,
+              userIdType: typeof transaction.userId,
+              isObjectId: transaction.userId instanceof ObjectId,
+              userMapSize: userMap.size,
+              sampleUserIds: Array.from(userMap.keys()).slice(0, 3)
+            });
+          }
+        }
+      }
+
+      // Get club/event names
+      const clubName = transaction.clubName || (transaction.clubId ? clubMap.get(transaction.clubId.toString()) || '' : '');
+      const eventName = transaction.eventName || (transaction.eventId ? eventMap.get(transaction.eventId.toString()) || '' : '');
+
       return {
         id: transaction._id.toString(),
-        userEmail: transaction.userEmail || '',
-        userName: transaction.userName || '',
-        userPhotoURL: transaction.userPhotoURL || null,
-        userInitials: getUserInitials(transaction.userName),
+        userEmail: userEmail || transaction.userEmail || '',
+        userName: userName || transaction.userName || '',
+        userPhotoURL: userPhotoURL || transaction.userPhotoURL || null,
+        userInitials: getUserInitials(userName || transaction.userName),
         amount: `৳${amount}`,
         type: transaction.type || '',
-        clubName: transaction.clubName || '',
-        eventName: transaction.eventName || '',
-        associatedItem: transaction.clubName || transaction.eventName || '',
+        clubName: clubName,
+        eventName: eventName,
+        associatedItem: clubName || eventName || '',
         date: formatDate(transaction.createdAt),
         status: transaction.status || 'pending'
       };
