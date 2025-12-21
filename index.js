@@ -590,7 +590,8 @@ async function initializeRoutes() {
           .toArray();
 
         // Format response to match frontend expectations
-        const formattedEvents = events.map(event => {
+        const clubsCollection = db.collection('clubs');
+        const formattedEvents = await Promise.all(events.map(async (event) => {
           const eventDate = event.date ? new Date(event.date) : new Date();
           const timeStr = event.time || '12:00 PM';
           
@@ -604,10 +605,23 @@ async function initializeRoutes() {
           const dayOfWeek = daysOfWeek[eventDate.getDay()];
           const formattedDate = `${dayOfWeek}, ${timeStr}`;
 
+          // Get clubId - first try from event, if not available, look up by clubName
+          let clubId = null;
+          if (event.clubId) {
+            clubId = typeof event.clubId === 'string' ? event.clubId : event.clubId.toString();
+          } else if (event.clubName) {
+            // Try to find club by name to get the ID
+            const club = await clubsCollection.findOne({ name: event.clubName });
+            if (club) {
+              clubId = club._id.toString();
+            }
+          }
+
           return {
             id: event._id.toString(),
             name: event.name || '',
             clubName: event.clubName || '',
+            clubId: clubId,
             image: event.image || null,
             date: eventDate,
             month: month,
@@ -616,7 +630,7 @@ async function initializeRoutes() {
             location: event.location || '',
             time: timeStr
           };
-        });
+        }));
 
         res.json({ events: formattedEvents });
       } catch (error) {
