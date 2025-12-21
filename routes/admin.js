@@ -1151,41 +1151,61 @@ router.get('/finances', verifyToken, authorize('admin'), async (req, res) => {
       .limit(limit)
       .toArray();
 
+    // Debug: Log raw transaction data
+    console.log('DEBUG: Raw transactions:', transactions.map(t => ({
+      id: t._id?.toString(),
+      userId: t.userId,
+      userIdType: typeof t.userId,
+      isObjectId: t.userId instanceof ObjectId,
+      userIdString: t.userId?.toString?.() || String(t.userId)
+    })));
+
     // Get total count
     const total = await transactionsCollection.countDocuments(query);
 
     // Fetch user information for all transactions
-    const userIds = [...new Set(transactions.map(t => t.userId).filter(Boolean))];
+    // Normalize all userIds to strings first
+    const userIds = [...new Set(transactions.map(t => {
+      if (!t.userId) return null;
+      // Normalize to string
+      if (typeof t.userId === 'string') return t.userId;
+      if (t.userId instanceof ObjectId) return t.userId.toString();
+      if (t.userId && typeof t.userId.toString === 'function') return t.userId.toString();
+      return String(t.userId);
+    }).filter(Boolean))];
     
-    // Convert all userIds to ObjectIds for query, handling both string and ObjectId formats
-    const userIdObjects = userIds.map(id => {
-      if (!id) return null;
-      try {
-        // Handle string userIds
-        if (typeof id === 'string' && ObjectId.isValid(id)) {
-          return new ObjectId(id);
-        }
-        // If it's already an ObjectId, return as is
-        if (id instanceof ObjectId) {
-          return id;
-        }
-        // Try to convert if it's an object with toString
-        if (id && typeof id.toString === 'function') {
-          const idStr = id.toString();
-          if (ObjectId.isValid(idStr)) {
-            return new ObjectId(idStr);
-          }
-        }
+    // Debug: Log transaction userIds
+    console.log('DEBUG: Normalized transaction userIds (strings):', userIds);
+    
+    // Convert all userIds to ObjectIds for query
+    const userIdObjects = userIds.map(idStr => {
+      if (!idStr || !ObjectId.isValid(idStr)) {
+        console.warn('DEBUG: Invalid userId string:', idStr);
         return null;
+      }
+      try {
+        return new ObjectId(idStr);
       } catch (err) {
-        console.error('Error converting userId to ObjectId:', id, err);
+        console.error('DEBUG: Error converting userId to ObjectId:', idStr, err);
         return null;
       }
     }).filter(Boolean);
     
+    console.log('DEBUG: Converted userIdObjects for query:', userIdObjects.length, userIdObjects.map(id => id.toString()));
+    
     const users = userIdObjects.length > 0 ? await usersCollection.find({
       _id: { $in: userIdObjects }
     }).toArray() : [];
+    
+    console.log('DEBUG: Found users:', users.length);
+    users.forEach(u => {
+      console.log('DEBUG: User found:', {
+        id: u._id.toString(),
+        name: u.name,
+        email: u.email,
+        photoURL: u.photoURL ? 'has photo' : 'no photo'
+      });
+    });
     
     const userMap = new Map();
     users.forEach(user => {
@@ -1198,6 +1218,8 @@ router.get('/finances', verifyToken, authorize('admin'), async (req, res) => {
       };
       userMap.set(userIdStr, userInfo);
     });
+    
+    console.log('DEBUG: UserMap created with', userMap.size, 'entries. Keys:', Array.from(userMap.keys()));
 
     // Fetch club and event information if needed
     const clubIds = [...new Set(transactions.map(t => t.clubId).filter(Boolean))];
@@ -1245,13 +1267,13 @@ router.get('/finances', verifyToken, authorize('admin'), async (req, res) => {
       let userPhotoURL = null;
       
       if (transaction.userId) {
-        // Normalize userId to string for lookup
+        // Normalize userId to string for lookup (same normalization as above)
         let userIdStr = '';
         try {
-          if (transaction.userId instanceof ObjectId) {
-            userIdStr = transaction.userId.toString();
-          } else if (typeof transaction.userId === 'string') {
+          if (typeof transaction.userId === 'string') {
             userIdStr = transaction.userId;
+          } else if (transaction.userId instanceof ObjectId) {
+            userIdStr = transaction.userId.toString();
           } else if (transaction.userId && typeof transaction.userId.toString === 'function') {
             userIdStr = transaction.userId.toString();
           } else {
@@ -1268,20 +1290,26 @@ router.get('/finances', verifyToken, authorize('admin'), async (req, res) => {
           userName = userInfo.name;
           userEmail = userInfo.email;
           userPhotoURL = userInfo.photoURL;
+          console.log('DEBUG: Successfully found user for transaction:', {
+            transactionId: transaction._id?.toString(),
+            userIdStr,
+            userName,
+            hasPhoto: !!userPhotoURL
+          });
         } else {
-          // Debug: log if user not found (only in development)
-          if (process.env.NODE_ENV !== 'production') {
-            console.warn('User not found for transaction:', {
-              transactionId: transaction._id?.toString(),
-              userId: transaction.userId,
-              userIdStr: userIdStr,
-              userIdType: typeof transaction.userId,
-              isObjectId: transaction.userId instanceof ObjectId,
-              userMapSize: userMap.size,
-              sampleUserIds: Array.from(userMap.keys()).slice(0, 3)
-            });
-          }
+          console.warn('DEBUG: User NOT found for transaction:', {
+            transactionId: transaction._id?.toString(),
+            userId: transaction.userId,
+            userIdStr: userIdStr,
+            userIdType: typeof transaction.userId,
+            isObjectId: transaction.userId instanceof ObjectId,
+            userMapSize: userMap.size,
+            userMapKeys: Array.from(userMap.keys()).slice(0, 5),
+            userIdInMap: userMap.has(userIdStr)
+          });
         }
+      } else {
+        console.warn('DEBUG: Transaction has no userId:', transaction._id?.toString());
       }
 
       // Get club/event names

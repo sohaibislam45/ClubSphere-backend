@@ -242,8 +242,10 @@ router.post('/confirm', verifyToken, async (req, res) => {
 
     // Create transaction record
     if (transactionsCollection) {
+      // Ensure userId is stored as string for consistency
+      const userIdStr = typeof userId === 'string' ? userId : userId.toString();
       const transaction = {
-        userId,
+        userId: userIdStr,
         eventId: eventId.toString(),
         type: 'event',
         description: `Event Registration - ${event.name || 'Event'}`,
@@ -591,8 +593,10 @@ router.post('/club/confirm', verifyToken, async (req, res) => {
 
     // Create transaction record
     if (transactionsCollection) {
+      // Ensure userId is stored as string for consistency
+      const userIdStr = typeof userId === 'string' ? userId : userId.toString();
       const transaction = {
-        userId,
+        userId: userIdStr,
         clubId: clubId.toString(),
         type: 'membership',
         description: `Club Membership - ${club.name || 'Club'}`,
