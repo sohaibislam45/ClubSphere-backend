@@ -119,19 +119,48 @@ router.get('/users', verifyToken, authorize('admin'), async (req, res) => {
   }
 });
 
-// Update user role
+// Update user (role, name, email)
 router.put('/users/:id', verifyToken, authorize('admin'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { role } = req.body;
+    const { role, name, email } = req.body;
 
-    if (!role) {
-      return res.status(400).json({ error: 'Role is required' });
+    // Validate that at least one field is provided
+    if (!role && !name && !email) {
+      return res.status(400).json({ error: 'At least one field (role, name, or email) is required' });
     }
+
+    // Validate role if provided
+    if (role && !['admin', 'clubManager', 'member'].includes(role)) {
+      return res.status(400).json({ error: 'Invalid role. Must be one of: admin, clubManager, member' });
+    }
+
+    // Validate email format if provided
+    if (email) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        return res.status(400).json({ error: 'Invalid email format' });
+      }
+
+      // Check if email is already taken by another user
+      const existingUser = await usersCollection.findOne({ 
+        email: email,
+        _id: { $ne: new ObjectId(id) }
+      });
+      if (existingUser) {
+        return res.status(400).json({ error: 'Email is already taken by another user' });
+      }
+    }
+
+    // Build update object with only provided fields
+    const updateData = { updatedAt: new Date() };
+    if (role) updateData.role = role;
+    if (name) updateData.name = name;
+    if (email) updateData.email = email;
 
     const result = await usersCollection.updateOne(
       { _id: new ObjectId(id) },
-      { $set: { role, updatedAt: new Date() } }
+      { $set: updateData }
     );
 
     if (result.matchedCount === 0) {
