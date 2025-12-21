@@ -550,6 +550,7 @@ async function initializeRoutes() {
     });
 
     // Public endpoint to fetch upcoming events (no authentication required)
+    // IMPORTANT: This specific route must come BEFORE /api/events/:id to avoid route conflicts
     app.get('/api/events/upcoming', async (req, res) => {
       try {
         const db = client.db('clubsphere');
@@ -600,6 +601,100 @@ async function initializeRoutes() {
       } catch (error) {
         console.error('Get upcoming events error:', error);
         res.status(500).json({ error: 'Internal server error' });
+      }
+    });
+
+    // Public endpoint to fetch a single event by ID (no authentication required)
+    // This comes AFTER /api/events/upcoming so the specific route matches first
+    app.get('/api/events/:id', async (req, res) => {
+      try {
+        const db = client.db('clubsphere');
+        const eventsCollection = db.collection('events');
+        const { id } = req.params;
+        
+        let event;
+        
+        // Try to find by ObjectId first
+        if (ObjectId.isValid(id)) {
+          event = await eventsCollection.findOne({ _id: new ObjectId(id) });
+        }
+        
+        // If not found, try finding by string id
+        if (!event) {
+          event = await eventsCollection.findOne({ _id: id });
+        }
+
+        if (!event) {
+          return res.status(404).json({ error: 'Event not found' });
+        }
+
+        // Only exclude cancelled events, allow active events or events without status
+        if (event.status === 'cancelled') {
+          return res.status(404).json({ error: 'Event not found' });
+        }
+
+        const eventDate = event.date ? new Date(event.date) : new Date();
+        const timeStr = event.time || '12:00 PM';
+        
+        // Get fee from event (price is stored in cents, fee might be in taka)
+        let eventFee = 0;
+        if (event.price !== undefined) {
+          // Price is stored in cents, convert to taka
+          eventFee = event.price / 100;
+        } else if (event.fee !== undefined) {
+          // Fee might already be in taka
+          eventFee = event.fee;
+        } else if (event.type === 'Paid' && event.amount) {
+          eventFee = event.amount;
+        }
+        const isPaid = eventFee > 0;
+
+        // Get club info if clubId exists
+        let clubImage = null;
+        if (event.clubId) {
+          const clubsCollection = db.collection('clubs');
+          let club;
+          if (ObjectId.isValid(event.clubId)) {
+            club = await clubsCollection.findOne({ _id: new ObjectId(event.clubId) });
+          } else {
+            club = await clubsCollection.findOne({ _id: event.clubId });
+          }
+          if (club) {
+            clubImage = club.image || null;
+          }
+        }
+
+        // Get current attendees count from registrations collection
+        const registrationsCollection = db.collection('registrations');
+        const currentAttendees = await registrationsCollection.countDocuments({
+          eventId: event._id.toString(),
+          status: 'registered'
+        });
+
+        // Format response to match frontend expectations
+        const formattedEvent = {
+          id: event._id.toString(),
+          title: event.name || '',
+          name: event.name || '',
+          eventDate: eventDate.toISOString(),
+          date: eventDate,
+          time: timeStr,
+          location: event.location || '',
+          description: event.description || '',
+          image: event.image || clubImage || null,
+          clubName: event.clubName || '',
+          clubImage: clubImage || null,
+          eventFee: eventFee,
+          isPaid: isPaid,
+          currentAttendees: currentAttendees,
+          maxAttendees: event.maxAttendees || null,
+          clubId: event.clubId || null
+        };
+
+        res.json(formattedEvent);
+      } catch (error) {
+        console.error('Get event by ID error:', error);
+        res.status(500).json({ error: 'Internal server error', message: error.message });
       }
     });
 
