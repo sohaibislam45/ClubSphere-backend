@@ -348,47 +348,148 @@ router.get('/clubs', verifyToken, authorize('member'), async (req, res) => {
 router.get('/events', verifyToken, authorize('member'), async (req, res) => {
   try {
     const userId = req.user.userId;
-    const tab = req.query.tab || 'my-joining'; // my-joining: all future registrations/waitlist, upcoming: future registered, joined: past registered, cancelled: cancelled
+    const tab = req.query.tab || 'my-joining'; // my-joining: all future registrations/waitlist, upcoming: all future events, joined: past registered, cancelled: cancelled
     const search = req.query.search || '';
 
     const now = new Date();
 
+    // For "upcoming" tab, fetch ALL upcoming events directly from events collection
+    if (tab === 'upcoming') {
+      // Query all upcoming events (not filtered by registration)
+      const eventsQuery = {
+        date: { $gte: now },
+        status: 'active'
+      };
+
+      let upcomingEvents = await eventsCollection
+        .find(eventsQuery)
+        .sort({ date: 1 })
+        .toArray();
+
+      // Apply search filter if provided
+      if (search) {
+        const searchLower = search.toLowerCase();
+        upcomingEvents = upcomingEvents.filter(event =>
+          event.name?.toLowerCase().includes(searchLower) ||
+          event.description?.toLowerCase().includes(searchLower) ||
+          event.location?.toLowerCase().includes(searchLower)
+        );
+      }
+
+      // Format events for response
+      const formattedEvents = await Promise.all(upcomingEvents.map(async (event) => {
+        const club = await clubsCollection.findOne({ _id: new ObjectId(event.clubId) });
+        
+        let eventDate;
+        if (event.date) {
+          if (event.date instanceof Date) {
+            eventDate = event.date;
+          } else if (typeof event.date === 'string') {
+            eventDate = new Date(event.date);
+          } else {
+            eventDate = new Date(event.date);
+          }
+        } else {
+          eventDate = new Date(Date.now() + 86400000); // Default to tomorrow if no date
+        }
+
+        // Check if user has registered for this event
+        const registration = await registrationsCollection.findOne({
+          userId,
+          eventId: event._id.toString(),
+          status: { $regex: /^registered$/i }
+        });
+
+        let statusLabel = 'Available';
+        let statusColor = 'primary';
+        if (registration) {
+          statusLabel = 'Registered';
+          statusColor = 'primary';
+        }
+
+        return {
+          id: event._id.toString(),
+          eventId: event._id.toString(),
+          name: event.name,
+          description: event.description || '',
+          image: event.image || null,
+          date: eventDate.toISOString(),
+          dateFormatted: formatDateDisplay(eventDate),
+          time: event.time || '12:00 PM',
+          location: event.location || '',
+          clubName: club?.name || 'Unknown Club',
+          clubId: event.clubId,
+          status: registration ? 'registered' : 'available',
+          statusLabel,
+          statusColor,
+          paymentStatus: registration?.paymentStatus || null,
+          registrationDate: registration?.registrationDate ? formatDateDisplay(registration.registrationDate) : null
+        };
+      }));
+
+      // Get counts for all tabs
+      const allRegistrations = await registrationsCollection.find({ userId }).toArray();
+      let myJoiningCount = 0;
+      let joinedCount = 0;
+      const cancelledCount = await registrationsCollection.countDocuments({
+        userId,
+        status: { $regex: /^cancelled$/i }
+      });
+
+      // Count events by checking event dates and status
+      for (const reg of allRegistrations) {
+        const event = await eventsCollection.findOne({ _id: new ObjectId(reg.eventId) });
+        if (event && event.status !== 'cancelled') {
+          const eventDate = event.date ? new Date(event.date) : new Date();
+          const eventDateOnly = new Date(eventDate.getFullYear(), eventDate.getMonth(), eventDate.getDate());
+          const nowDateOnly = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+          const isFuture = eventDateOnly >= nowDateOnly;
+          
+          if (reg.status === 'registered' || reg.status === 'waitlisted') {
+            if (isFuture) {
+              myJoiningCount++;
+            } else if (reg.status === 'registered') {
+              joinedCount++;
+            }
+          }
+        }
+      }
+
+      // Count upcoming events
+      const upcomingCount = await eventsCollection.countDocuments({
+        date: { $gte: now },
+        status: 'active'
+      });
+
+      return res.json({
+        events: formattedEvents,
+        counts: {
+          'my-joining': myJoiningCount,
+          upcoming: upcomingCount,
+          joined: joinedCount,
+          cancelled: cancelledCount
+        }
+      });
+    }
+
+    // For other tabs, use registration-based query
     // Build query based on tab
     const query = { userId };
     
     if (tab === 'my-joining') {
       // My Joining Events: registered or waitlisted (all active registrations)
       query.status = { $in: ['registered', 'waitlisted', 'Registered', 'Waitlisted'] };
-    } else if (tab === 'upcoming') {
-      // For upcoming, get all registered (we'll filter by date later)
-      // Use regex to handle case-insensitive matching
-      query.status = { $regex: /^registered$/i };
     } else if (tab === 'joined') {
       query.status = { $regex: /^registered$/i };
     } else if (tab === 'cancelled') {
       query.status = { $regex: /^cancelled$/i };
     }
 
-    // DEBUG: Log the query
-    console.log('DEBUG - Tab:', tab);
-    console.log('DEBUG - Query:', JSON.stringify(query, null, 2));
-
     // Get registrations
     const registrations = await registrationsCollection
       .find(query)
       .sort({ registrationDate: -1 })
       .toArray();
-
-    // DEBUG: Log registrations found
-    console.log('DEBUG - Registrations found:', registrations.length);
-    if (tab === 'upcoming') {
-      console.log('DEBUG - Registration statuses:', registrations.map(r => ({ 
-        id: r._id.toString(), 
-        status: r.status, 
-        eventId: r.eventId,
-        registrationDate: r.registrationDate || r.createdAt
-      })));
-    }
 
     // Get event details for each registration
     const eventsWithDetails = await Promise.all(registrations.map(async (registration) => {
@@ -547,11 +648,10 @@ router.get('/events', verifyToken, authorize('member'), async (req, res) => {
     // Get counts for tabs - need to check event dates
     const allRegistrations = await registrationsCollection.find({ userId }).toArray();
     let myJoiningCount = 0;
-    let upcomingCount = 0;
     let joinedCount = 0;
     const cancelledCount = await registrationsCollection.countDocuments({
       userId,
-      status: 'cancelled'
+      status: { $regex: /^cancelled$/i }
     });
 
     // Count events by checking event dates and status
@@ -567,15 +667,18 @@ router.get('/events', verifyToken, authorize('member'), async (req, res) => {
         if (reg.status === 'registered' || reg.status === 'waitlisted') {
           if (isFuture) {
             myJoiningCount++; // Count for "My Joining Events"
-            if (reg.status === 'registered') {
-              upcomingCount++; // Count for "Upcoming"
-            }
           } else if (reg.status === 'registered') {
             joinedCount++; // Count for "Joined" (past events)
           }
         }
       }
     }
+
+    // Count upcoming events (all upcoming events in the system)
+    const upcomingCount = await eventsCollection.countDocuments({
+      date: { $gte: now },
+      status: 'active'
+    });
 
     res.json({
       events: filteredEvents,
