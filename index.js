@@ -364,6 +364,70 @@ async function initializeRoutes() {
       }
     });
 
+    // Endpoint to check if user is a member of a club (optional auth)
+    app.get('/api/clubs/:id/membership', async (req, res) => {
+      try {
+        const db = client.db('clubsphere');
+        const membershipsCollection = db.collection('memberships');
+        const { id } = req.params;
+        
+        // Get userId from token if available (optional auth)
+        const token = req.headers.authorization?.split(' ')[1];
+        let userId = null;
+        
+        if (token) {
+          try {
+            const jwt = require('jsonwebtoken');
+            const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+            userId = decoded.userId;
+          } catch (error) {
+            // Token invalid or expired, but that's okay - just return not a member
+            userId = null;
+          }
+        }
+
+        if (!userId) {
+          return res.json({ isMember: false, membership: null });
+        }
+
+        // Check if membership exists - try both string and ObjectId formats
+        let membership = await membershipsCollection.findOne({
+          userId: userId,
+          $or: [
+            { clubId: id.toString() },
+            { clubId: id }
+          ],
+          status: { $in: ['active', 'pending'] }
+        });
+
+        // If not found and id is a valid ObjectId, try with ObjectId string
+        if (!membership && ObjectId.isValid(id)) {
+          membership = await membershipsCollection.findOne({
+            userId: userId,
+            clubId: new ObjectId(id).toString(),
+            status: { $in: ['active', 'pending'] }
+          });
+        }
+
+        if (membership) {
+          return res.json({ 
+            isMember: true, 
+            membership: {
+              id: membership._id.toString(),
+              status: membership.status,
+              joinDate: membership.joinDate,
+              expiryDate: membership.expiryDate
+            }
+          });
+        }
+
+        res.json({ isMember: false, membership: null });
+      } catch (error) {
+        console.error('Check membership error:', error);
+        res.status(500).json({ error: 'Internal server error', message: error.message });
+      }
+    });
+
     // Public endpoint to fetch all clubs with search and filter (no authentication required)
     app.get('/api/clubs', async (req, res) => {
       try {
