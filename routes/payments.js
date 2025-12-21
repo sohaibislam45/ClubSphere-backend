@@ -28,6 +28,7 @@ let registrationsCollection;
 let usersCollection;
 let clubsCollection;
 let membershipsCollection;
+let transactionsCollection;
 
 // Initialize collections
 const initPaymentRoutes = (client) => {
@@ -37,6 +38,7 @@ const initPaymentRoutes = (client) => {
   usersCollection = db.collection('users');
   clubsCollection = db.collection('clubs');
   membershipsCollection = db.collection('memberships');
+  transactionsCollection = db.collection('transactions');
   return router;
 };
 
@@ -237,6 +239,24 @@ router.post('/confirm', verifyToken, async (req, res) => {
     };
 
     const result = await registrationsCollection.insertOne(registration);
+
+    // Create transaction record
+    if (transactionsCollection) {
+      const transaction = {
+        userId,
+        eventId: eventId.toString(),
+        type: 'event',
+        description: `Event Registration - ${event.name || 'Event'}`,
+        amount: Math.round(parseFloat(paymentIntent.metadata.totalAmount) * 100), // Store in cents
+        currency: 'bdt',
+        status: 'success',
+        paymentIntentId,
+        invoiceId: paymentIntent.id,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      };
+      await transactionsCollection.insertOne(transaction);
+    }
 
     res.json({
       success: true,
@@ -568,6 +588,24 @@ router.post('/club/confirm', verifyToken, async (req, res) => {
       { _id: ObjectId.isValid(clubId) ? new ObjectId(clubId) : clubId },
       { $inc: { memberCount: 1 } }
     );
+
+    // Create transaction record
+    if (transactionsCollection) {
+      const transaction = {
+        userId,
+        clubId: clubId.toString(),
+        type: 'membership',
+        description: `Club Membership - ${club.name || 'Club'}`,
+        amount: Math.round(parseFloat(paymentIntent.metadata.totalAmount) * 100), // Store in cents
+        currency: 'bdt',
+        status: 'success',
+        paymentIntentId,
+        invoiceId: paymentIntent.id,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      };
+      await transactionsCollection.insertOne(transaction);
+    }
 
     res.json({
       success: true,
