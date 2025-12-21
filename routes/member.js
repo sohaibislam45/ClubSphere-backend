@@ -358,14 +358,20 @@ router.get('/events', verifyToken, authorize('member'), async (req, res) => {
     
     if (tab === 'my-joining') {
       // My Joining Events: registered or waitlisted (all active registrations)
-      query.status = { $in: ['registered', 'waitlisted'] };
+      query.status = { $in: ['registered', 'waitlisted', 'Registered', 'Waitlisted'] };
     } else if (tab === 'upcoming') {
-      query.status = 'registered';
+      // For upcoming, get all registered (we'll filter by date later)
+      // Use regex to handle case-insensitive matching
+      query.status = { $regex: /^registered$/i };
     } else if (tab === 'joined') {
-      query.status = 'registered';
+      query.status = { $regex: /^registered$/i };
     } else if (tab === 'cancelled') {
-      query.status = 'cancelled';
+      query.status = { $regex: /^cancelled$/i };
     }
+
+    // DEBUG: Log the query
+    console.log('DEBUG - Tab:', tab);
+    console.log('DEBUG - Query:', JSON.stringify(query, null, 2));
 
     // Get registrations
     const registrations = await registrationsCollection
@@ -373,13 +379,38 @@ router.get('/events', verifyToken, authorize('member'), async (req, res) => {
       .sort({ registrationDate: -1 })
       .toArray();
 
+    // DEBUG: Log registrations found
+    console.log('DEBUG - Registrations found:', registrations.length);
+    if (tab === 'upcoming') {
+      console.log('DEBUG - Registration statuses:', registrations.map(r => ({ 
+        id: r._id.toString(), 
+        status: r.status, 
+        eventId: r.eventId,
+        registrationDate: r.registrationDate || r.createdAt
+      })));
+    }
+
     // Get event details for each registration
     const eventsWithDetails = await Promise.all(registrations.map(async (registration) => {
-      const event = await eventsCollection.findOne({ _id: new ObjectId(registration.eventId) });
-      if (!event) return null;
+      let event;
+      try {
+        event = await eventsCollection.findOne({ _id: new ObjectId(registration.eventId) });
+      } catch (error) {
+        console.log('DEBUG - Error finding event:', registration.eventId, error.message);
+        return null;
+      }
+      
+      if (!event) {
+        console.log('DEBUG - Event not found for registration:', registration._id.toString(), 'eventId:', registration.eventId);
+        return null;
+      }
 
       // Skip cancelled events (unless we're viewing cancelled tab)
-      if (tab !== 'cancelled' && event.status === 'cancelled') return null;
+      // Check both lowercase and original case
+      if (tab !== 'cancelled' && (event.status === 'cancelled' || event.status === 'Cancelled')) {
+        console.log('DEBUG - Event cancelled, skipping:', event._id.toString(), event.name);
+        return null;
+      }
 
       // Apply search filter
       if (search) {
@@ -395,10 +426,24 @@ router.get('/events', verifyToken, authorize('member'), async (req, res) => {
       // Handle event date - if no date, treat as future event for upcoming/my-joining tabs
       let eventDate;
       if (event.date) {
-        eventDate = new Date(event.date);
+        // Handle different date formats
+        if (event.date instanceof Date) {
+          eventDate = event.date;
+        } else if (typeof event.date === 'string') {
+          eventDate = new Date(event.date);
+        } else if (event.date instanceof ObjectId) {
+          // MongoDB ObjectId contains timestamp, extract it
+          eventDate = event.date.getTimestamp();
+        } else {
+          eventDate = new Date(event.date);
+        }
+        
         // Check if date is valid
         if (isNaN(eventDate.getTime())) {
-          eventDate = new Date(); // Invalid date, use current date
+          console.log('DEBUG - Invalid date for event:', event.name, '| Original date:', event.date, '| Type:', typeof event.date);
+          // For upcoming/my-joining, treat invalid dates as future events
+          if (tab === 'joined') return null;
+          eventDate = new Date(Date.now() + 86400000); // Default to tomorrow
         }
       } else {
         // No date set - for upcoming/my-joining, treat as future; for joined, exclude
@@ -407,14 +452,42 @@ router.get('/events', verifyToken, authorize('member'), async (req, res) => {
       }
       
       // Normalize dates to compare only date part (ignore time)
-      const eventDateOnly = new Date(eventDate.getFullYear(), eventDate.getMonth(), eventDate.getDate());
-      const nowDateOnly = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      const isPast = eventDateOnly < nowDateOnly;
-      const isTodayOrFuture = eventDateOnly >= nowDateOnly;
+      // Use local timezone to avoid timezone conversion issues
+      const eventYear = eventDate.getFullYear();
+      const eventMonth = eventDate.getMonth();
+      const eventDay = eventDate.getDate();
+      const eventDateOnly = new Date(eventYear, eventMonth, eventDay, 0, 0, 0, 0);
+      
+      const nowYear = now.getFullYear();
+      const nowMonth = now.getMonth();
+      const nowDay = now.getDate();
+      const nowDateOnly = new Date(nowYear, nowMonth, nowDay, 0, 0, 0, 0);
+      
+      // Compare timestamps for accurate comparison
+      const isPast = eventDateOnly.getTime() < nowDateOnly.getTime();
+      const isTodayOrFuture = eventDateOnly.getTime() >= nowDateOnly.getTime();
+
+      // DEBUG: Log date comparison for upcoming tab
+      if (tab === 'upcoming') {
+        console.log('DEBUG - Event:', event.name);
+        console.log('  - Original event.date:', event.date);
+        console.log('  - Parsed eventDate:', eventDate.toISOString());
+        console.log('  - Event Date Only (normalized):', eventDateOnly.toISOString());
+        console.log('  - Now Date Only (normalized):', nowDateOnly.toISOString());
+        console.log('  - Is Past:', isPast);
+        console.log('  - Registration Status:', registration.status);
+        console.log('  - Event Status:', event.status);
+      }
 
       // Filter by date based on tab
-      if (tab === 'my-joining' && isPast) return null; // Only show future events for "my joining"
-      if (tab === 'upcoming' && isPast) return null; // Only show future events for "upcoming"
+      if (tab === 'my-joining' && isPast) {
+        if (tab === 'upcoming') console.log('DEBUG - Filtered out (past):', event.name);
+        return null; // Only show future events for "my joining"
+      }
+      if (tab === 'upcoming' && isPast) {
+        console.log('DEBUG - Filtered out (past) from upcoming:', event.name);
+        return null; // Only show future events for "upcoming"
+      }
       if (tab === 'joined' && isTodayOrFuture) return null; // Only show past events for "joined"
       if (tab === 'cancelled') {
         // Cancelled events can be from any time, no date filter needed
@@ -422,13 +495,14 @@ router.get('/events', verifyToken, authorize('member'), async (req, res) => {
 
       let statusLabel = 'Confirmed';
       let statusColor = 'primary';
-      if (registration.status === 'waitlisted') {
+      const regStatus = (registration.status || '').toLowerCase();
+      if (regStatus === 'waitlisted') {
         statusLabel = 'Waitlisted';
         statusColor = 'yellow';
-      } else if (registration.status === 'cancelled') {
+      } else if (regStatus === 'cancelled') {
         statusLabel = 'Cancelled';
         statusColor = 'red';
-      } else if (registration.paymentStatus === 'pending') {
+      } else if ((registration.paymentStatus || '').toLowerCase() === 'pending') {
         statusLabel = 'Pending';
         statusColor = 'blue';
       }
@@ -455,6 +529,20 @@ router.get('/events', verifyToken, authorize('member'), async (req, res) => {
 
     // Filter out null results
     const filteredEvents = eventsWithDetails.filter(e => e !== null);
+
+    // DEBUG: Log final results
+    if (tab === 'upcoming') {
+      console.log('DEBUG - Final filtered events count:', filteredEvents.length);
+      console.log('DEBUG - Final events:', filteredEvents.map(e => ({ 
+        name: e.name, 
+        date: e.date, 
+        dateFormatted: e.dateFormatted,
+        status: e.status,
+        statusLabel: e.statusLabel 
+      })));
+      console.log('DEBUG - Total registrations processed:', registrations.length);
+      console.log('DEBUG - Events filtered out:', registrations.length - filteredEvents.length);
+    }
 
     // Get counts for tabs - need to check event dates
     const allRegistrations = await registrationsCollection.find({ userId }).toArray();
