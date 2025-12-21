@@ -161,18 +161,21 @@ router.get('/discover', verifyToken, authorize('member'), async (req, res) => {
     const topPicksFiltered = clubsWithDetails.filter(club => !club.isJoined);
 
     // Build query for events
+    // Use current time to ensure we get accurate date comparisons
     const now = new Date();
     now.setHours(0, 0, 0, 0); // Start of today
+    console.log(`[Discover] Current date: ${now.toISOString()}`);
     
     // Calculate week from now for filtering
     const weekFromNow = new Date();
     weekFromNow.setDate(weekFromNow.getDate() + 7);
     weekFromNow.setHours(23, 59, 59, 999); // End of the day 7 days from now
     
-    // Build base query - get all upcoming events (not cancelled)
-    // We'll filter by date in JavaScript since dates might be stored as strings
+    // Build base query - get all events (not cancelled)
+    // We'll filter by date in JavaScript since dates might be stored as strings or Date objects
     const eventQuery = {
-      status: { $ne: 'cancelled' }
+      status: { $ne: 'cancelled' },
+      date: { $exists: true, $ne: null } // Only get events that have a date
     };
 
     // Add search filter if provided
@@ -183,17 +186,22 @@ router.get('/discover', verifyToken, authorize('member'), async (req, res) => {
       ];
     }
 
-    // Fetch all upcoming events (we'll filter by date range in JavaScript)
+    // Fetch events - we'll do all date filtering in JavaScript for accuracy
     // Get more events than needed to account for filtering
     const allEvents = await eventsCollection
       .find(eventQuery)
       .sort({ date: 1 })
-      .limit(50) // Get more events to filter from
+      .limit(100) // Get more events to ensure we have enough after filtering
       .toArray();
+    
+    console.log(`[Discover] MongoDB query returned ${allEvents.length} events (before date filtering)`);
     
     // Filter events by date range in JavaScript (handles both Date objects and strings)
     const filteredEvents = allEvents.filter(event => {
-      if (!event.date) return false;
+      if (!event.date) {
+        console.log(`[Discover] Event "${event.name}" has no date, skipping`);
+        return false;
+      }
       
       // Convert date to Date object regardless of how it's stored
       let eventDate;
@@ -220,17 +228,50 @@ router.get('/discover', verifyToken, authorize('member'), async (req, res) => {
       }
       
       // Normalize dates to compare only date part (ignore time)
-      const eventDateOnly = new Date(eventDate.getFullYear(), eventDate.getMonth(), eventDate.getDate());
-      const nowDateOnly = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      const weekFromNowDateOnly = new Date(weekFromNow.getFullYear(), weekFromNow.getMonth(), weekFromNow.getDate());
+      // Create date-only objects for comparison (local time, no time component)
+      const eventYear = eventDate.getFullYear();
+      const eventMonth = eventDate.getMonth();
+      const eventDay = eventDate.getDate();
+      const eventDateOnly = new Date(eventYear, eventMonth, eventDay, 0, 0, 0, 0);
+      
+      const nowYear = now.getFullYear();
+      const nowMonth = now.getMonth();
+      const nowDay = now.getDate();
+      const nowDateOnly = new Date(nowYear, nowMonth, nowDay, 0, 0, 0, 0);
+      
+      const weekYear = weekFromNow.getFullYear();
+      const weekMonth = weekFromNow.getMonth();
+      const weekDay = weekFromNow.getDate();
+      const weekFromNowDateOnly = new Date(weekYear, weekMonth, weekDay, 0, 0, 0, 0);
+      
+      // Calculate days difference
+      const daysDiff = Math.round((eventDateOnly - nowDateOnly) / (1000 * 60 * 60 * 24));
       
       // For "this week" filter (default), show events from today to 7 days from now
       if (filter === 'today') {
         // For "today" filter, show only today's events
-        return eventDateOnly.getTime() === nowDateOnly.getTime();
+        const isToday = eventDateOnly.getTime() === nowDateOnly.getTime();
+        if (!isToday) {
+          console.log(`[Discover] Event "${event.name}" date ${eventDateOnly.toISOString().split('T')[0]} (${daysDiff} days from today) is not today, filtering out`);
+        }
+        return isToday;
       } else {
         // Default: show events from today to 7 days from now
-        return eventDateOnly >= nowDateOnly && eventDateOnly <= weekFromNowDateOnly;
+        // Only include events that are today or in the future (not past events)
+        // Must be >= today AND <= 7 days from now
+        const isInRange = eventDateOnly.getTime() >= nowDateOnly.getTime() && eventDateOnly.getTime() <= weekFromNowDateOnly.getTime();
+        
+        // Additional validation: daysDiff should be between 0 and 7
+        const isValidRange = daysDiff >= 0 && daysDiff <= 7;
+        const finalResult = isInRange && isValidRange;
+        
+        if (!finalResult) {
+          console.log(`[Discover] Event "${event.name}" date ${eventDateOnly.toISOString().split('T')[0]} is ${daysDiff} days from today (range: 0-7 days), filtering out`);
+        } else {
+          console.log(`[Discover] ✓ Event "${event.name}" date ${eventDateOnly.toISOString().split('T')[0]} is ${daysDiff} days from today, INCLUDING`);
+        }
+        
+        return finalResult;
       }
     });
     
@@ -238,7 +279,20 @@ router.get('/discover', verifyToken, authorize('member'), async (req, res) => {
     const events = filteredEvents.slice(0, 10);
     
     // Debug logging
+    console.log(`[Discover] Date range: ${now.toISOString().split('T')[0]} to ${weekFromNow.toISOString().split('T')[0]}`);
     console.log(`[Discover] Found ${allEvents.length} total events, ${filteredEvents.length} in date range, returning ${events.length} events`);
+    if (events.length > 0) {
+      console.log(`[Discover] Events being returned:`, events.map(e => {
+        const eventDate = e.date ? new Date(e.date) : null;
+        return {
+          name: e.name,
+          date: eventDate ? eventDate.toISOString().split('T')[0] : 'no date',
+          daysFromNow: eventDate ? Math.ceil((eventDate - now) / (1000 * 60 * 60 * 24)) : 'N/A'
+        };
+      }));
+    } else {
+      console.log(`[Discover] No events found in the date range ${now.toISOString().split('T')[0]} to ${weekFromNow.toISOString().split('T')[0]}`);
+    }
 
     // Format events with registration counts
     const eventsWithDetails = await Promise.all(events.map(async (event) => {
