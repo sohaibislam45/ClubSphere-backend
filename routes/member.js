@@ -388,11 +388,16 @@ router.get('/events', verifyToken, authorize('member'), async (req, res) => {
 
       const club = await clubsCollection.findOne({ _id: new ObjectId(event.clubId) });
       const eventDate = event.date ? new Date(event.date) : new Date();
-      const isPast = eventDate < now;
+      
+      // Normalize dates to compare only date part (ignore time)
+      const eventDateOnly = new Date(eventDate.getFullYear(), eventDate.getMonth(), eventDate.getDate());
+      const nowDateOnly = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const isPast = eventDateOnly < nowDateOnly;
+      const isTodayOrFuture = eventDateOnly >= nowDateOnly;
 
       // Filter by date based on tab
       if (tab === 'upcoming' && isPast) return null;
-      if (tab === 'past' && !isPast) return null;
+      if (tab === 'past' && isTodayOrFuture) return null;
 
       let statusLabel = 'Confirmed';
       let statusColor = 'primary';
@@ -449,7 +454,10 @@ router.get('/events', verifyToken, authorize('member'), async (req, res) => {
         const event = await eventsCollection.findOne({ _id: new ObjectId(reg.eventId) });
         if (event) {
           const eventDate = event.date ? new Date(event.date) : new Date();
-          if (eventDate >= now) {
+          // Normalize dates to compare only date part (ignore time)
+          const eventDateOnly = new Date(eventDate.getFullYear(), eventDate.getMonth(), eventDate.getDate());
+          const nowDateOnly = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+          if (eventDateOnly >= nowDateOnly) {
             upcomingCount++;
           } else {
             pastCount++;
