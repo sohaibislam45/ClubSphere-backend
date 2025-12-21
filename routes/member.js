@@ -378,6 +378,9 @@ router.get('/events', verifyToken, authorize('member'), async (req, res) => {
       const event = await eventsCollection.findOne({ _id: new ObjectId(registration.eventId) });
       if (!event) return null;
 
+      // Skip cancelled events (unless we're viewing cancelled tab)
+      if (tab !== 'cancelled' && event.status === 'cancelled') return null;
+
       // Apply search filter
       if (search) {
         const searchLower = search.toLowerCase();
@@ -388,7 +391,20 @@ router.get('/events', verifyToken, authorize('member'), async (req, res) => {
       }
 
       const club = await clubsCollection.findOne({ _id: new ObjectId(event.clubId) });
-      const eventDate = event.date ? new Date(event.date) : new Date();
+      
+      // Handle event date - if no date, treat as future event for upcoming/my-joining tabs
+      let eventDate;
+      if (event.date) {
+        eventDate = new Date(event.date);
+        // Check if date is valid
+        if (isNaN(eventDate.getTime())) {
+          eventDate = new Date(); // Invalid date, use current date
+        }
+      } else {
+        // No date set - for upcoming/my-joining, treat as future; for joined, exclude
+        if (tab === 'joined') return null;
+        eventDate = new Date(Date.now() + 86400000); // Default to tomorrow if no date
+      }
       
       // Normalize dates to compare only date part (ignore time)
       const eventDateOnly = new Date(eventDate.getFullYear(), eventDate.getMonth(), eventDate.getDate());
@@ -398,7 +414,7 @@ router.get('/events', verifyToken, authorize('member'), async (req, res) => {
 
       // Filter by date based on tab
       if (tab === 'my-joining' && isPast) return null; // Only show future events for "my joining"
-      if (tab === 'upcoming' && isPast) return null;
+      if (tab === 'upcoming' && isPast) return null; // Only show future events for "upcoming"
       if (tab === 'joined' && isTodayOrFuture) return null; // Only show past events for "joined"
       if (tab === 'cancelled') {
         // Cancelled events can be from any time, no date filter needed
@@ -453,7 +469,7 @@ router.get('/events', verifyToken, authorize('member'), async (req, res) => {
     // Count events by checking event dates and status
     for (const reg of allRegistrations) {
       const event = await eventsCollection.findOne({ _id: new ObjectId(reg.eventId) });
-      if (event) {
+      if (event && event.status !== 'cancelled') { // Exclude cancelled events from counts
         const eventDate = event.date ? new Date(event.date) : new Date();
         // Normalize dates to compare only date part (ignore time)
         const eventDateOnly = new Date(eventDate.getFullYear(), eventDate.getMonth(), eventDate.getDate());
