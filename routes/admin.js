@@ -1137,7 +1137,12 @@ router.get('/finances', verifyToken, authorize('admin'), async (req, res) => {
     }
     
     if (status && status !== 'all') {
-      query.status = status;
+      // Map frontend status to database status
+      if (status === 'paid') {
+        query.status = 'success';
+      } else {
+        query.status = status;
+      }
     }
     if (type && type !== 'all') {
       query.type = type;
@@ -1316,6 +1321,15 @@ router.get('/finances', verifyToken, authorize('admin'), async (req, res) => {
       const clubName = transaction.clubName || (transaction.clubId ? clubMap.get(transaction.clubId.toString()) || '' : '');
       const eventName = transaction.eventName || (transaction.eventId ? eventMap.get(transaction.eventId.toString()) || '' : '');
 
+      // Map status from database format to frontend format
+      let status = transaction.status || 'pending';
+      if (status === 'success') {
+        status = 'paid';
+      } else if (status !== 'pending' && status !== 'failed') {
+        // If status is something else, default to pending
+        status = 'pending';
+      }
+
       return {
         id: transaction._id.toString(),
         userEmail: userEmail || transaction.userEmail || '',
@@ -1328,7 +1342,7 @@ router.get('/finances', verifyToken, authorize('admin'), async (req, res) => {
         eventName: eventName,
         associatedItem: clubName || eventName || '',
         date: formatDate(transaction.createdAt),
-        status: transaction.status || 'pending'
+        status: status
       };
     });
 
