@@ -230,7 +230,7 @@ router.get('/dashboard/stats', verifyToken, authorize('admin'), async (req, res)
     // Total revenue
     const revenueResult = await transactionsCollection.aggregate([
       {
-        $match: { status: 'paid' }
+        $match: { status: 'success' }
       },
       {
         $group: {
@@ -245,7 +245,7 @@ router.get('/dashboard/stats', verifyToken, authorize('admin'), async (req, res)
     const revenueThisMonth = await transactionsCollection.aggregate([
       {
         $match: {
-          status: 'paid',
+          status: 'success',
           createdAt: { $gte: startOfMonth }
         }
       },
@@ -259,7 +259,7 @@ router.get('/dashboard/stats', verifyToken, authorize('admin'), async (req, res)
     const revenueLastMonth = await transactionsCollection.aggregate([
       {
         $match: {
-          status: 'paid',
+          status: 'success',
           createdAt: { $gte: lastMonth, $lte: endOfLastMonth }
         }
       },
@@ -294,6 +294,54 @@ router.get('/dashboard/stats', verifyToken, authorize('admin'), async (req, res)
     });
   } catch (error) {
     console.error('Get dashboard stats error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get monthly revenue data for chart
+router.get('/dashboard/monthly-revenue', verifyToken, authorize('admin'), async (req, res) => {
+  try {
+    const months = parseInt(req.query.months) || 6; // Default to 6 months
+    const now = new Date();
+    const monthlyData = [];
+
+    // Get revenue for each month
+    for (let i = months - 1; i >= 0; i--) {
+      const monthStart = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const monthEnd = new Date(now.getFullYear(), now.getMonth() - i + 1, 0, 23, 59, 59, 999);
+      
+      const monthRevenue = await transactionsCollection.aggregate([
+        {
+          $match: {
+            status: 'success',
+            createdAt: {
+              $gte: monthStart,
+              $lte: monthEnd
+            }
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: '$amount' }
+          }
+        }
+      ]).toArray();
+
+      const revenue = monthRevenue.length > 0 ? monthRevenue[0].total : 0;
+      const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      
+      monthlyData.push({
+        month: monthNames[monthStart.getMonth()],
+        year: monthStart.getFullYear(),
+        revenue: revenue / 100, // Convert cents to taka
+        monthIndex: monthStart.getMonth()
+      });
+    }
+
+    res.json({ monthlyData });
+  } catch (error) {
+    console.error('Get monthly revenue error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -717,7 +765,7 @@ router.get('/events/stats', verifyToken, authorize('admin'), async (req, res) =>
     const revenueResult = await transactionsCollection.aggregate([
       {
         $match: {
-          status: 'paid',
+          status: 'success',
           type: { $in: ['Event Ticket', 'event'] }
         }
       },
@@ -1022,10 +1070,10 @@ router.get('/finances/stats', verifyToken, authorize('admin'), async (req, res) 
     const now = new Date();
     const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
-    // Total revenue (all paid transactions)
+    // Total revenue (all successful transactions)
     const revenueResult = await transactionsCollection.aggregate([
       {
-        $match: { status: 'paid' }
+        $match: { status: 'success' }
       },
       {
         $group: {
