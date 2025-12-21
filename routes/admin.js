@@ -577,16 +577,45 @@ router.put('/clubs/:id/approve-deletion', verifyToken, authorize('admin'), async
     }
 
     const clubId = id;
+    const clubObjectId = new ObjectId(id);
 
     // Cascade delete related data
+    // First, find all events associated with this club to get their IDs
+    // Events can have clubId as string, ObjectId, or be matched by clubName
+    const eventsToDelete = await eventsCollection.find({
+      $or: [
+        { clubId: clubId }, // String format
+        { clubId: clubObjectId }, // ObjectId format
+        { clubName: club.name } // Match by club name
+      ]
+    }).toArray();
+
+    // Get event IDs for deleting related registrations
+    const eventIds = eventsToDelete.map(event => event._id);
+    const eventIdStrings = eventIds.map(id => id.toString());
+
+    // Delete event registrations for these events
+    // Handle both string and ObjectId formats for eventId
+    if (eventIds.length > 0) {
+      await registrationsCollection.deleteMany({
+        $or: [
+          { eventId: { $in: eventIdStrings } }, // String format
+          { eventId: { $in: eventIds } } // ObjectId format
+        ]
+      });
+    }
+
     // Delete events associated with this club
-    await eventsCollection.deleteMany({ clubId: clubId });
+    await eventsCollection.deleteMany({
+      $or: [
+        { clubId: clubId }, // String format
+        { clubId: clubObjectId }, // ObjectId format
+        { clubName: club.name } // Match by club name
+      ]
+    });
 
     // Delete memberships for this club
     await membershipsCollection.deleteMany({ clubId: clubId });
-
-    // Delete event registrations for events of this club (events already deleted, but cleanup any orphaned records)
-    await registrationsCollection.deleteMany({ clubId: clubId });
 
     // Finally, delete the club
     const result = await clubsCollection.deleteOne({ _id: new ObjectId(id) });

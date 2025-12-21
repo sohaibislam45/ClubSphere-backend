@@ -27,10 +27,38 @@ if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
   console.log('FIREBASE_SERVICE_ACCOUNT_KEY not found. Google OAuth will not work.');
 }
 
-// CORS configuration - Allow all origins for Vercel deployment
+// CORS configuration
+const allowedOrigins = [
+  'https://clubsphere-c7f59.web.app',
+  'http://localhost:5173',
+  'http://localhost:3000'
+];
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL || true, // Allow all origins if FRONTEND_URL not set
-  credentials: true
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    // Always allow Firebase frontend URL
+    if (origin === 'https://clubsphere-c7f59.web.app') {
+      return callback(null, true);
+    }
+    
+    // Check if origin is in allowed list
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else if (process.env.FRONTEND_URL && origin.includes(process.env.FRONTEND_URL)) {
+      // Allow if FRONTEND_URL env var matches
+      callback(null, true);
+    } else {
+      // For production on Vercel, allow all origins to prevent CORS issues
+      // You can restrict this later if needed
+      callback(null, true);
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.use(express.json());
 
