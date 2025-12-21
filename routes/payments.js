@@ -40,10 +40,9 @@ const initPaymentRoutes = (client) => {
   return router;
 };
 
-// Calculate service fee (10% of event fee, minimum ৳1.50)
+// Calculate service fee - removed, no service fee
 const calculateServiceFee = (eventFee) => {
-  const fee = eventFee * 0.1;
-  return Math.max(fee, 1.50);
+  return 0;
 };
 
 // Create payment intent
@@ -126,8 +125,8 @@ router.post('/create-intent', verifyToken, async (req, res) => {
       return res.status(400).json({ error: 'Event is free, use direct registration' });
     }
 
-    const serviceFee = calculateServiceFee(eventFee);
-    const totalAmount = eventFee + serviceFee;
+    const serviceFee = 0;
+    const totalAmount = eventFee;
 
     // Convert to smallest currency unit (BDT uses poisha, but Stripe uses smallest unit)
     // For BDT, 1 BDT = 100 poisha, but Stripe expects amount in smallest unit
@@ -432,8 +431,8 @@ router.post('/club/create-intent', verifyToken, async (req, res) => {
       return res.status(400).json({ error: 'Club is free, use direct registration' });
     }
 
-    const serviceFee = calculateServiceFee(membershipFee);
-    const totalAmount = membershipFee + serviceFee;
+    const serviceFee = 0;
+    const totalAmount = membershipFee;
 
     // Convert to cents for Stripe
     const amountInCents = Math.round(totalAmount * 100);
