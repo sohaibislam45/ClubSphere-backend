@@ -443,18 +443,32 @@ router.get('/events', verifyToken, authorize('clubManager'), async (req, res) =>
       ]
     };
     
-    // Start with clubId condition
+    // Build query conditions array - always start with clubId condition
     const queryConditions = [clubIdCondition];
     
     // Add filter conditions
     if (filter === 'upcoming') {
       queryConditions.push({ date: { $gte: now } });
-      queryConditions.push({ status: { $ne: 'cancelled' } });
+      queryConditions.push({ 
+        $or: [
+          { status: { $ne: 'cancelled' } },
+          { status: { $exists: false } },
+          { status: null }
+        ]
+      });
     } else if (filter === 'past') {
-      queryConditions.push({ date: { $lt: now } });
+      // For past events, ensure date exists and is less than now
+      queryConditions.push({ 
+        $and: [
+          { date: { $exists: true } },
+          { date: { $ne: null } },
+          { date: { $lt: now } }
+        ]
+      });
     } else if (filter === 'drafts') {
       queryConditions.push({ status: 'draft' });
     }
+    // For 'all' filter, we only have clubIdCondition in the array
     
     // Add search condition if provided
     if (search) {
@@ -466,8 +480,9 @@ router.get('/events', verifyToken, authorize('clubManager'), async (req, res) =>
       });
     }
     
-    // Build final query
-    const query = queryConditions.length > 1 ? { $and: queryConditions } : clubIdCondition;
+    // Build final query - always use $and for consistency
+    // MongoDB handles single-item $and arrays correctly
+    const query = { $and: queryConditions };
 
     console.log('[Manager Events] Query:', JSON.stringify(query, null, 2));
 
@@ -488,23 +503,29 @@ router.get('/events', verifyToken, authorize('clubManager'), async (req, res) =>
     }
 
     // Get stats - handle both string and ObjectId formats
-    const statsQuery = {
-      $or: [
-        { clubId: { $in: clubIds } },
-        { clubId: { $in: clubObjectIds } }
-      ]
-    };
+    // Use the same clubIdCondition structure for consistency
+    const statsQuery = clubIdCondition;
     const totalEvents = await eventsCollection.countDocuments(statsQuery);
+    
     const upcomingEventsQuery = {
-      ...statsQuery,
-      date: { $gte: now },
-      status: { $ne: 'cancelled' }
+      $and: [
+        clubIdCondition,
+        { date: { $gte: now } },
+        {
+          $or: [
+            { status: { $ne: 'cancelled' } },
+            { status: { $exists: false } },
+            { status: null }
+          ]
+        }
+      ]
     };
     const upcomingEvents = await eventsCollection.countDocuments(upcomingEventsQuery);
 
     // Calculate revenue from events (simplified - sum prices of all events)
     // For more accurate revenue, we would need to calculate from actual registrations
-    const allEvents = await eventsCollection.find(statsQuery).toArray();
+    // Use the same clubIdCondition for consistency
+    const allEvents = await eventsCollection.find(clubIdCondition).toArray();
     let revenue = 0;
     for (const event of allEvents) {
       const regCount = await registrationsCollection.countDocuments({
