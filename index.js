@@ -942,6 +942,38 @@ async function initializeRoutes() {
       }
     });
 
+    // Public endpoint to fetch platform statistics (no authentication required)
+    app.get('/api/public/stats', async (req, res) => {
+      try {
+        const db = client.db('clubsphere');
+        const clubsCollection = db.collection('clubs');
+        const membershipsCollection = db.collection('memberships');
+
+        // Count active clubs
+        const totalClubs = await clubsCollection.countDocuments({
+          $or: [
+            { status: 'active' },
+            { status: { $exists: false } },
+            { status: null }
+          ]
+        });
+
+        // Count total active memberships (each membership represents a member in a club)
+        // Note: One user can have multiple memberships (one per club)
+        const totalMemberships = await membershipsCollection.countDocuments({
+          status: 'active'
+        });
+
+        res.json({
+          totalClubs,
+          totalMembers: totalMemberships
+        });
+      } catch (error) {
+        console.error('Get public stats error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+      }
+    });
+
     // Public endpoint to fetch all categories
     app.get('/api/categories', async (req, res) => {
       try {
