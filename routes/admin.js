@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { ObjectId } = require('mongodb');
+const bcrypt = require('bcryptjs');
 const { verifyToken, authorize } = require('../middleware/auth');
 
 // MongoDB collections (will be initialized from index.js)
@@ -170,6 +171,70 @@ router.put('/users/:id', verifyToken, authorize('admin'), async (req, res) => {
     res.json({ message: 'User updated successfully' });
   } catch (error) {
     console.error('Update user error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Create new user
+router.post('/users', verifyToken, authorize('admin'), async (req, res) => {
+  try {
+    const { email, password, name, role = 'member', photoURL } = req.body;
+
+    // Validate input
+    if (!email || !password || !name) {
+      return res.status(400).json({ error: 'Email, password, and name are required' });
+    }
+
+    // Validate role
+    if (role && !['admin', 'clubManager', 'member'].includes(role)) {
+      return res.status(400).json({ error: 'Invalid role. Must be one of: admin, clubManager, member' });
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ error: 'Invalid email format' });
+    }
+
+    // Check if user already exists
+    const existingUser = await usersCollection.findOne({ email });
+    if (existingUser) {
+      return res.status(400).json({ error: 'User with this email already exists' });
+    }
+
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Create user object
+    const user = {
+      email,
+      password: hashedPassword,
+      name,
+      role: role.toLowerCase(),
+      photoURL: photoURL || null,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    // Insert user into database
+    const result = await usersCollection.insertOne(user);
+    const userId = result.insertedId;
+
+    // Return user data (without password)
+    res.status(201).json({
+      message: 'User created successfully',
+      user: {
+        id: userId.toString(),
+        email: user.email,
+        name: user.name,
+        role: user.role,
+        photoURL: user.photoURL,
+        createdAt: formatDate(user.createdAt),
+        joinedDate: formatDate(user.createdAt)
+      }
+    });
+  } catch (error) {
+    console.error('Create user error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
