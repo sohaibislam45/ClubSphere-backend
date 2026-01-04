@@ -1133,13 +1133,14 @@ async function initializeRoutes() {
         const limit = parseInt(req.query.limit) || 3;
 
         // Fetch recent reviews (club reviews only, not event reviews)
+        // Reviews store clubId as ObjectId, so we need to query correctly
         const reviews = await reviewsCollection
           .find({ 
-            clubId: { $exists: true }, // Only club reviews
+            clubId: { $exists: true, $ne: null }, // Only club reviews (exists and not null)
             eventId: { $exists: false } // Exclude event reviews
           })
-          .sort({ createdAt: -1 })
-          .limit(limit * 3) // Get more to filter by quality
+          .sort({ createdAt: -1 }) // Most recent first
+          .limit(limit) // Get exactly the number requested
           .toArray();
 
         // Get user info for each review
@@ -1178,22 +1179,30 @@ async function initializeRoutes() {
           };
         });
 
-        // Format reviews and prefer higher rated ones, then limit
+        // Format reviews - show most recent ones (already sorted by createdAt: -1)
         const formattedReviews = reviews
-          .map(review => ({
-            id: review._id.toString(),
-            rating: review.rating,
-            comment: review.comment,
-            createdAt: review.createdAt,
-            user: userMap[review.userId.toString()] || {
-              name: 'Anonymous',
-              email: '',
-              photoURL: null
-            },
-            clubName: clubMap[review.clubId?.toString()]?.name || 'Unknown Club'
-          }))
-          .sort((a, b) => b.rating - a.rating) // Sort by rating (highest first)
-          .slice(0, limit); // Take only the requested number
+          .map(review => {
+            const clubIdStr = review.clubId ? (typeof review.clubId === 'string' ? review.clubId : review.clubId.toString()) : null;
+            const userIdStr = review.userId ? (typeof review.userId === 'string' ? review.userId : review.userId.toString()) : null;
+            
+            return {
+              id: review._id.toString(),
+              rating: review.rating,
+              comment: review.comment,
+              createdAt: review.createdAt,
+              user: userIdStr ? (userMap[userIdStr] || {
+                name: 'Anonymous',
+                email: '',
+                photoURL: null
+              }) : {
+                name: 'Anonymous',
+                email: '',
+                photoURL: null
+              },
+              clubName: clubIdStr ? (clubMap[clubIdStr]?.name || 'Unknown Club') : 'Unknown Club'
+            };
+          })
+          .slice(0, limit); // Take only the requested number (already sorted by createdAt: -1, so most recent first)
 
         res.json({ reviews: formattedReviews });
       } catch (error) {
