@@ -1073,9 +1073,23 @@ async function initializeRoutes() {
           status: 'active'
         });
 
+        // Count total events
+        const eventsCollection = db.collection('events');
+        const now = new Date();
+        const totalEvents = await eventsCollection.countDocuments({
+          date: { $gte: now },
+          status: 'active'
+        });
+
+        // Count total users
+        const usersCollection = db.collection('users');
+        const totalUsers = await usersCollection.countDocuments({});
+
         res.json({
           totalClubs,
-          totalMembers: totalMemberships
+          totalMembers: totalMemberships,
+          totalEvents,
+          totalUsers
         });
       } catch (error) {
         console.error('Get public stats error:', error);
