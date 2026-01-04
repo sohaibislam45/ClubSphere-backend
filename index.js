@@ -1123,6 +1123,85 @@ async function initializeRoutes() {
       }
     });
 
+    // Public endpoint to get featured/recent reviews (for home page)
+    app.get('/api/reviews/featured', async (req, res) => {
+      try {
+        const db = client.db('clubsphere');
+        const reviewsCollection = db.collection('reviews');
+        const usersCollection = db.collection('users');
+        const clubsCollection = db.collection('clubs');
+        const limit = parseInt(req.query.limit) || 3;
+
+        // Fetch recent reviews (club reviews only, not event reviews)
+        const reviews = await reviewsCollection
+          .find({ 
+            clubId: { $exists: true }, // Only club reviews
+            eventId: { $exists: false } // Exclude event reviews
+          })
+          .sort({ createdAt: -1 })
+          .limit(limit * 3) // Get more to filter by quality
+          .toArray();
+
+        // Get user info for each review
+        const userIds = [...new Set(reviews.map(r => r.userId))];
+        const userObjectIds = userIds
+          .filter(id => ObjectId.isValid(id))
+          .map(id => new ObjectId(id));
+        
+        const users = await usersCollection
+          .find({ _id: { $in: userObjectIds } })
+          .toArray();
+
+        const userMap = {};
+        users.forEach(user => {
+          userMap[user._id.toString()] = {
+            name: user.name,
+            email: user.email,
+            photoURL: user.photoURL
+          };
+        });
+
+        // Get club info for each review
+        const clubIds = [...new Set(reviews.map(r => r.clubId?.toString()).filter(Boolean))];
+        const clubObjectIds = clubIds
+          .filter(id => ObjectId.isValid(id))
+          .map(id => new ObjectId(id));
+        
+        const clubs = await clubsCollection
+          .find({ _id: { $in: clubObjectIds } })
+          .toArray();
+
+        const clubMap = {};
+        clubs.forEach(club => {
+          clubMap[club._id.toString()] = {
+            name: club.name
+          };
+        });
+
+        // Format reviews and prefer higher rated ones, then limit
+        const formattedReviews = reviews
+          .map(review => ({
+            id: review._id.toString(),
+            rating: review.rating,
+            comment: review.comment,
+            createdAt: review.createdAt,
+            user: userMap[review.userId.toString()] || {
+              name: 'Anonymous',
+              email: '',
+              photoURL: null
+            },
+            clubName: clubMap[review.clubId?.toString()]?.name || 'Unknown Club'
+          }))
+          .sort((a, b) => b.rating - a.rating) // Sort by rating (highest first)
+          .slice(0, limit); // Take only the requested number
+
+        res.json({ reviews: formattedReviews });
+      } catch (error) {
+        console.error('Get featured reviews error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+      }
+    });
+
     // Public endpoint to get reviews for a club
     app.get('/api/clubs/:id/reviews', async (req, res) => {
       try {
@@ -1214,21 +1293,73 @@ async function initializeRoutes() {
         }
 
         // Check if user is a member of this club
-        const membership = await membershipsCollection.findOne({
-          userId: new ObjectId(userId),
-          clubId: new ObjectId(clubId),
+        // DEBUG: Log the values we're searching with
+        console.log('Review endpoint DEBUG:', {
+          userId: userId,
+          userIdType: typeof userId,
+          clubId: clubId,
+          clubIdType: typeof clubId,
+          clubIdStr: clubId.toString()
+        });
+
+        // Use the EXACT same pattern as the working membership check endpoint (lines 394-410)
+        let membership = await membershipsCollection.findOne({
+          userId: userId,
+          $or: [
+            { clubId: clubId.toString() },
+            { clubId: clubId }
+          ],
           status: 'active'
         });
 
+        console.log('First query result:', membership ? 'FOUND' : 'NOT FOUND');
+
+        // If not found and clubId is a valid ObjectId, try with ObjectId string format
+        if (!membership && ObjectId.isValid(clubId)) {
+          const objectIdStr = new ObjectId(clubId).toString();
+          console.log('Trying ObjectId string format:', objectIdStr);
+          membership = await membershipsCollection.findOne({
+            userId: userId,
+            clubId: objectIdStr,
+            status: 'active'
+          });
+          console.log('Second query result:', membership ? 'FOUND' : 'NOT FOUND');
+        }
+
+        // DEBUG: If still not found, let's check what memberships exist for this user
         if (!membership) {
+          const allUserMemberships = await membershipsCollection.find({
+            userId: userId
+          }).toArray();
+          console.log('All memberships for user:', allUserMemberships.length);
+          allUserMemberships.forEach(m => {
+            console.log('Membership:', {
+              clubId: m.clubId,
+              clubIdType: typeof m.clubId,
+              status: m.status,
+              matchesClubId: m.clubId === clubId || m.clubId === clubId.toString() || m.clubId?.toString() === clubId.toString()
+            });
+          });
+        }
+
+        if (!membership) {
+          console.error('Review endpoint: Membership not found after all attempts');
           return res.status(403).json({ error: 'You must be a member of this club to leave a review' });
         }
 
-        // Check if user has already reviewed this club
-        const existingReview = await reviewsCollection.findOne({
+        // Check if user has already reviewed this club - try both ObjectId formats
+        let existingReview = await reviewsCollection.findOne({
           userId: new ObjectId(userId),
           clubId: new ObjectId(clubId)
         });
+
+        // If not found, try with string formats (in case reviews store as strings)
+        if (!existingReview) {
+          existingReview = await reviewsCollection.findOne({
+            userId: userId,
+            clubId: clubId
+          });
+        }
 
         if (existingReview) {
           return res.status(400).json({ error: 'You have already reviewed this club' });
