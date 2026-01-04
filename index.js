@@ -541,10 +541,9 @@ async function initializeRoutes() {
         const search = req.query.search || '';
         const category = req.query.category || '';
         const sortBy = req.query.sortBy || 'newest'; // Default to 'newest'
-
-        // First, let's check what clubs exist and their statuses (for debugging)
-        const allClubs = await clubsCollection.find({}).toArray();
-
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 12;
+        const skip = (page - 1) * limit;
 
         // Build query - show active clubs, or clubs without status (for backward compatibility)
         // For public viewing, we want to show approved/active clubs
@@ -587,6 +586,19 @@ async function initializeRoutes() {
           };
         }
 
+        // Add search filter to query if provided
+        if (search) {
+          const searchLower = search.toLowerCase();
+          const searchQuery = {
+            $or: [
+              { name: { $regex: searchLower, $options: 'i' } },
+              { location: { $regex: searchLower, $options: 'i' } },
+              { description: { $regex: searchLower, $options: 'i' } }
+            ]
+          };
+          query = query.$and ? { $and: [...query.$and, searchQuery] } : { $and: [query, searchQuery] };
+        }
+
         // Determine sort order based on sortBy parameter
         // For date-based sorting, sort in database; for fee-based, sort after formatting
         let sortQuery = {};
@@ -599,23 +611,18 @@ async function initializeRoutes() {
           sortQuery = { createdAt: -1 };
         }
 
-        // Fetch clubs with appropriate sorting
+        // Get total count for pagination
+        const total = await clubsCollection.countDocuments(query);
+
+        // Fetch clubs with appropriate sorting, skip, and limit
         let clubs = await clubsCollection
           .find(query)
           .sort(sortQuery)
+          .skip(skip)
+          .limit(limit)
           .toArray();
 
         console.log(`Found ${clubs.length} clubs matching query (status: active or no status)`);
-
-        // Apply search filter if provided
-        if (search) {
-          const searchLower = search.toLowerCase();
-          clubs = clubs.filter(club => 
-            club.name?.toLowerCase().includes(searchLower) ||
-            club.location?.toLowerCase().includes(searchLower) ||
-            club.description?.toLowerCase().includes(searchLower)
-          );
-        }
 
         // Format response to match frontend expectations
         let formattedClubs = clubs.map(club => {
@@ -658,7 +665,15 @@ async function initializeRoutes() {
         }
 
         console.log(`Returning ${formattedClubs.length} formatted clubs`);
-        res.json(formattedClubs);
+        res.json({
+          clubs: formattedClubs,
+          pagination: {
+            page,
+            limit,
+            total,
+            totalPages: Math.ceil(total / limit)
+          }
+        });
       } catch (error) {
         console.error('Get clubs error:', error);
         console.error('Error stack:', error.stack);
@@ -676,12 +691,25 @@ async function initializeRoutes() {
         const search = req.query.search || '';
         const filter = req.query.filter || 'all';
         const sortBy = req.query.sortBy || 'oldest'; // Default to 'oldest' (earliest date first)
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 12;
+        const skip = (page - 1) * limit;
 
         // Build query
         let query = {
           date: { $gte: now },
           status: 'active'
         };
+
+        // Add search filter to query if provided
+        if (search) {
+          const searchLower = search.toLowerCase();
+          query.$or = [
+            { name: { $regex: searchLower, $options: 'i' } },
+            { location: { $regex: searchLower, $options: 'i' } },
+            { clubName: { $regex: searchLower, $options: 'i' } }
+          ];
+        }
 
         // Determine sort order based on sortBy parameter
         // For date-based sorting, sort in database; for fee-based, sort after formatting
@@ -695,7 +723,7 @@ async function initializeRoutes() {
           sortQuery = { date: 1 };
         }
 
-        // Fetch events with appropriate sorting
+        // Fetch all events matching query (need all for fee-based sorting and free filter)
         let events = await eventsCollection
           .find(query)
           .sort(sortQuery)
@@ -756,23 +784,27 @@ async function initializeRoutes() {
           formattedEvents.sort((a, b) => (a.eventFee || 0) - (b.eventFee || 0));
         }
 
-        // Apply search filter
-        let filteredEvents = formattedEvents;
-        if (search) {
-          const searchLower = search.toLowerCase();
-          filteredEvents = formattedEvents.filter(event =>
-            event.title?.toLowerCase().includes(searchLower) ||
-            event.location?.toLowerCase().includes(searchLower) ||
-            event.clubName?.toLowerCase().includes(searchLower)
-          );
-        }
-
         // Apply free filter
+        let filteredEvents = formattedEvents;
         if (filter === 'free') {
           filteredEvents = filteredEvents.filter(event => event.eventFee === 0);
         }
 
-        res.json(filteredEvents);
+        // Get total count before pagination
+        const total = filteredEvents.length;
+
+        // Apply pagination
+        const paginatedEvents = filteredEvents.slice(skip, skip + limit);
+
+        res.json({
+          events: paginatedEvents,
+          pagination: {
+            page,
+            limit,
+            total,
+            totalPages: Math.ceil(total / limit)
+          }
+        });
       } catch (error) {
         console.error('Get events error:', error);
         res.status(500).json({ error: 'Internal server error' });
@@ -939,6 +971,83 @@ async function initializeRoutes() {
       } catch (error) {
         console.error('Get event by ID error:', error);
         res.status(500).json({ error: 'Internal server error', message: error.message });
+      }
+    });
+
+    // Public endpoint to submit contact form (no authentication required)
+    app.post('/api/contact', async (req, res) => {
+      try {
+        const db = client.db('clubsphere');
+        const contactCollection = db.collection('contact_submissions');
+        const { name, email, subject, message } = req.body;
+
+        // Validate input
+        if (!name || !email || !subject || !message) {
+          return res.status(400).json({ error: 'All fields are required' });
+        }
+
+        // Validate email format
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(email)) {
+          return res.status(400).json({ error: 'Invalid email address' });
+        }
+
+        // Store contact submission
+        const submission = {
+          name,
+          email,
+          subject,
+          message,
+          createdAt: new Date(),
+          status: 'new' // new, read, replied
+        };
+
+        await contactCollection.insertOne(submission);
+
+        res.json({ success: true, message: 'Your message has been sent successfully' });
+      } catch (error) {
+        console.error('Contact submission error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+      }
+    });
+
+    // Public endpoint to subscribe to newsletter (no authentication required)
+    app.post('/api/newsletter/subscribe', async (req, res) => {
+      try {
+        const db = client.db('clubsphere');
+        const newsletterCollection = db.collection('newsletter_subscriptions');
+        const { email } = req.body;
+
+        // Validate input
+        if (!email) {
+          return res.status(400).json({ error: 'Email is required' });
+        }
+
+        // Validate email format
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(email)) {
+          return res.status(400).json({ error: 'Invalid email address' });
+        }
+
+        // Check if email is already subscribed
+        const existing = await newsletterCollection.findOne({ email: email.toLowerCase() });
+        if (existing) {
+          return res.status(400).json({ error: 'This email is already subscribed' });
+        }
+
+        // Store newsletter subscription
+        const subscription = {
+          email: email.toLowerCase(),
+          subscribedAt: new Date(),
+          status: 'active' // active, unsubscribed
+        };
+
+        await newsletterCollection.insertOne(subscription);
+
+        res.json({ success: true, message: 'Successfully subscribed to newsletter' });
+      } catch (error) {
+        console.error('Newsletter subscription error:', error);
+        res.status(500).json({ error: 'Internal server error' });
       }
     });
 
