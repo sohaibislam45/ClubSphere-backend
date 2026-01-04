@@ -1123,6 +1123,263 @@ async function initializeRoutes() {
       }
     });
 
+    // Public endpoint to get reviews for a club
+    app.get('/api/clubs/:id/reviews', async (req, res) => {
+      try {
+        const db = client.db('clubsphere');
+        const reviewsCollection = db.collection('reviews');
+        const usersCollection = db.collection('users');
+        const clubId = req.params.id;
+
+        if (!ObjectId.isValid(clubId)) {
+          return res.status(400).json({ error: 'Invalid club ID' });
+        }
+
+        // Fetch reviews for this club
+        const reviews = await reviewsCollection
+          .find({ clubId: new ObjectId(clubId) })
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        // Get user info for each review
+        const userIds = [...new Set(reviews.map(r => r.userId))];
+        const userObjectIds = userIds
+          .filter(id => ObjectId.isValid(id))
+          .map(id => new ObjectId(id));
+        
+        const users = await usersCollection
+          .find({ _id: { $in: userObjectIds } })
+          .toArray();
+
+        const userMap = {};
+        users.forEach(user => {
+          userMap[user._id.toString()] = {
+            name: user.name,
+            email: user.email,
+            photoURL: user.photoURL
+          };
+        });
+
+        // Calculate average rating
+        const ratings = reviews.map(r => r.rating);
+        const averageRating = ratings.length > 0 
+          ? (ratings.reduce((a, b) => a + b, 0) / ratings.length).toFixed(1)
+          : 0;
+
+        // Format reviews
+        const formattedReviews = reviews.map(review => ({
+          id: review._id.toString(),
+          rating: review.rating,
+          comment: review.comment,
+          createdAt: review.createdAt,
+          user: userMap[review.userId.toString()] || {
+            name: 'Anonymous',
+            email: '',
+            photoURL: null
+          }
+        }));
+
+        res.json({
+          reviews: formattedReviews,
+          averageRating: parseFloat(averageRating),
+          totalReviews: reviews.length
+        });
+      } catch (error) {
+        console.error('Get club reviews error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+      }
+    });
+
+    // Authenticated endpoint to submit a review for a club
+    app.post('/api/clubs/:id/reviews', verifyToken, async (req, res) => {
+      try {
+        const db = client.db('clubsphere');
+        const reviewsCollection = db.collection('reviews');
+        const membershipsCollection = db.collection('memberships');
+        const clubId = req.params.id;
+        const userId = req.user.userId;
+        const { rating, comment } = req.body;
+
+        if (!ObjectId.isValid(clubId)) {
+          return res.status(400).json({ error: 'Invalid club ID' });
+        }
+
+        // Validate input
+        if (!rating || rating < 1 || rating > 5) {
+          return res.status(400).json({ error: 'Rating must be between 1 and 5' });
+        }
+
+        if (!comment || comment.trim().length < 10) {
+          return res.status(400).json({ error: 'Comment must be at least 10 characters' });
+        }
+
+        // Check if user is a member of this club
+        const membership = await membershipsCollection.findOne({
+          userId: new ObjectId(userId),
+          clubId: new ObjectId(clubId),
+          status: 'active'
+        });
+
+        if (!membership) {
+          return res.status(403).json({ error: 'You must be a member of this club to leave a review' });
+        }
+
+        // Check if user has already reviewed this club
+        const existingReview = await reviewsCollection.findOne({
+          userId: new ObjectId(userId),
+          clubId: new ObjectId(clubId)
+        });
+
+        if (existingReview) {
+          return res.status(400).json({ error: 'You have already reviewed this club' });
+        }
+
+        // Create review
+        const review = {
+          userId: new ObjectId(userId),
+          clubId: new ObjectId(clubId),
+          rating: parseInt(rating),
+          comment: comment.trim(),
+          createdAt: new Date()
+        };
+
+        await reviewsCollection.insertOne(review);
+
+        res.json({ success: true, message: 'Review submitted successfully' });
+      } catch (error) {
+        console.error('Submit club review error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+      }
+    });
+
+    // Public endpoint to get reviews for an event
+    app.get('/api/events/:id/reviews', async (req, res) => {
+      try {
+        const db = client.db('clubsphere');
+        const reviewsCollection = db.collection('reviews');
+        const usersCollection = db.collection('users');
+        const eventId = req.params.id;
+
+        if (!ObjectId.isValid(eventId)) {
+          return res.status(400).json({ error: 'Invalid event ID' });
+        }
+
+        // Fetch reviews for this event
+        const reviews = await reviewsCollection
+          .find({ eventId: new ObjectId(eventId) })
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        // Get user info for each review
+        const userIds = [...new Set(reviews.map(r => r.userId))];
+        const userObjectIds = userIds
+          .filter(id => ObjectId.isValid(id))
+          .map(id => new ObjectId(id));
+        
+        const users = await usersCollection
+          .find({ _id: { $in: userObjectIds } })
+          .toArray();
+
+        const userMap = {};
+        users.forEach(user => {
+          userMap[user._id.toString()] = {
+            name: user.name,
+            email: user.email,
+            photoURL: user.photoURL
+          };
+        });
+
+        // Calculate average rating
+        const ratings = reviews.map(r => r.rating);
+        const averageRating = ratings.length > 0 
+          ? (ratings.reduce((a, b) => a + b, 0) / ratings.length).toFixed(1)
+          : 0;
+
+        // Format reviews
+        const formattedReviews = reviews.map(review => ({
+          id: review._id.toString(),
+          rating: review.rating,
+          comment: review.comment,
+          createdAt: review.createdAt,
+          user: userMap[review.userId.toString()] || {
+            name: 'Anonymous',
+            email: '',
+            photoURL: null
+          }
+        }));
+
+        res.json({
+          reviews: formattedReviews,
+          averageRating: parseFloat(averageRating),
+          totalReviews: reviews.length
+        });
+      } catch (error) {
+        console.error('Get event reviews error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+      }
+    });
+
+    // Authenticated endpoint to submit a review for an event
+    app.post('/api/events/:id/reviews', verifyToken, async (req, res) => {
+      try {
+        const db = client.db('clubsphere');
+        const reviewsCollection = db.collection('reviews');
+        const registrationsCollection = db.collection('event_registrations');
+        const eventId = req.params.id;
+        const userId = req.user.userId;
+        const { rating, comment } = req.body;
+
+        if (!ObjectId.isValid(eventId)) {
+          return res.status(400).json({ error: 'Invalid event ID' });
+        }
+
+        // Validate input
+        if (!rating || rating < 1 || rating > 5) {
+          return res.status(400).json({ error: 'Rating must be between 1 and 5' });
+        }
+
+        if (!comment || comment.trim().length < 10) {
+          return res.status(400).json({ error: 'Comment must be at least 10 characters' });
+        }
+
+        // Check if user has registered for this event
+        const registration = await registrationsCollection.findOne({
+          userId: new ObjectId(userId),
+          eventId: new ObjectId(eventId)
+        });
+
+        if (!registration) {
+          return res.status(403).json({ error: 'You must have registered for this event to leave a review' });
+        }
+
+        // Check if user has already reviewed this event
+        const existingReview = await reviewsCollection.findOne({
+          userId: new ObjectId(userId),
+          eventId: new ObjectId(eventId)
+        });
+
+        if (existingReview) {
+          return res.status(400).json({ error: 'You have already reviewed this event' });
+        }
+
+        // Create review
+        const review = {
+          userId: new ObjectId(userId),
+          eventId: new ObjectId(eventId),
+          rating: parseInt(rating),
+          comment: comment.trim(),
+          createdAt: new Date()
+        };
+
+        await reviewsCollection.insertOne(review);
+
+        res.json({ success: true, message: 'Review submitted successfully' });
+      } catch (error) {
+        console.error('Submit event review error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+      }
+    });
+
     app.routesInitialized = true;
   } catch (error) {
     console.error('Error initializing routes:', error);
